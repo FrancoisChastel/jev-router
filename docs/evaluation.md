@@ -8,6 +8,12 @@ No savings claim without this. `stats` and `replay` tell you what routing did to
 - A gateway key for the egress in your policy, for example `OPENROUTER_API_KEY`, and the same or another key for the judge
 - The relay: `bun run build` in this repo, or `npm i -g @french-castle/jev-router`
 
+## Apple Silicon: enable Rosetta in Docker Desktop first
+
+Terminal-Bench images are x86-64 only. On an Apple Silicon Mac, Docker Desktop runs them under QEMU unless Rosetta is enabled, and the Terminal-Bench verifier, which downloads a standalone CPython through `uv` and runs pytest, segfaults under QEMU. The agent runs and finishes, then every trial scores zero. Observed on a full eight-task run: eight of eight verifiers died with `qemu: uncaught target signal 11`.
+
+Enable **Settings, General, Use Rosetta for x86_64/amd64 emulation on Apple Silicon** in Docker Desktop and restart it before running anything below. On Linux x86-64 hosts this does not apply.
+
 ## Make the relay reachable from the sandbox
 
 Harbor runs each task in a Docker container. `127.0.0.1` inside the container is not your machine.
