@@ -23,6 +23,21 @@ export RELAY=http://host.docker.internal:4141     # Linux with a bridge bind: ht
 
 The relay injects your real provider key, so a non-loopback bind requires a token, and every request must present it. Pass it as the harness credential below. Stop the relay after the run.
 
+## Scripted runs
+
+Two scripts in `scripts/` do everything below for one configuration at a time and produce the comparison table:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...   # judge and egress
+export JEV_ROUTER_HOME=/tmp/jev-bench/home && jev-router init
+scripts/bench-terminal-bench.sh fast           # pinned baseline via --shadow, default eight-task subset
+scripts/bench-terminal-bench.sh routed
+scripts/bench-terminal-bench.sh mid
+node scripts/bench-report.mjs --jobs /tmp/jev-bench/jobs --logs /tmp/jev-bench --policy /tmp/jev-bench/home/policy.json fast routed mid
+```
+
+The runner starts the relay on all interfaces with a generated token, runs Harbor with the Pi adapter (`BENCH_AGENT=opencode` switches harness), and stops the relay. Pass task names as extra arguments to change the subset. The report joins each trial's verifier reward with the relay's decision log for that configuration.
+
 ## Routed runs
 
 The relay checks the credential Harbor passes against its token, then swaps in the egress key.
