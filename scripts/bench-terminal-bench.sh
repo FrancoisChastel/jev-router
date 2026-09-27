@@ -11,7 +11,8 @@
 #      BENCH_PORT (default 4141), BENCH_DIR (default /tmp/jev-bench), JEV_ROUTER_TOKEN (generated if unset),
 #      BENCH_FORCE_BUILD (0|1; default 1 when the Docker daemon is not amd64, so task images are rebuilt natively from their
 #      Dockerfile instead of running the amd64 images under emulation, where the verifier's Python segfaults),
-#      BENCH_HARBOR_ARGS (extra words appended to `harbor run`).
+#      BENCH_HARBOR_ARGS (extra words appended to `harbor run`), BENCH_ATTEMPTS (attempts per task; when > 1 the job and
+#      the decision log are named <config>-k<N> so repeated runs sit next to single-attempt ones).
 set -euo pipefail
 
 CONFIG=${1:?config required: routed | fast | mid | frontier}
@@ -30,7 +31,10 @@ DOCKER_ARCH=$(docker version --format '{{.Server.Arch}}' 2>/dev/null || echo unk
 if [ "$DOCKER_ARCH" = "amd64" ]; then BENCH_FORCE_BUILD=${BENCH_FORCE_BUILD:-0}; else BENCH_FORCE_BUILD=${BENCH_FORCE_BUILD:-1}; fi
 export JEV_ROUTER_TOKEN=${JEV_ROUTER_TOKEN:-$(openssl rand -hex 12)}
 export JEV_ROUTER_HOME=${JEV_ROUTER_HOME:-$BENCH_DIR/home}
-export JEV_ROUTER_LOG="$BENCH_DIR/$CONFIG.jsonl"
+BENCH_ATTEMPTS=${BENCH_ATTEMPTS:-1}
+RUN_NAME=$CONFIG
+[ "$BENCH_ATTEMPTS" -gt 1 ] && RUN_NAME="$CONFIG-k$BENCH_ATTEMPTS"
+export JEV_ROUTER_LOG="$BENCH_DIR/$RUN_NAME.jsonl"
 mkdir -p "$BENCH_DIR/jobs" "$JEV_ROUTER_HOME"
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -65,6 +69,7 @@ esac
 
 EXTRA_ARGS=()
 [ "$BENCH_FORCE_BUILD" = "1" ] && EXTRA_ARGS+=(--force-build)
+[ "$BENCH_ATTEMPTS" -gt 1 ] && EXTRA_ARGS+=(--n-attempts "$BENCH_ATTEMPTS")
 # shellcheck disable=SC2206 # intentional word splitting of user-supplied extra args
 [ -n "${BENCH_HARBOR_ARGS:-}" ] && EXTRA_ARGS+=(${BENCH_HARBOR_ARGS})
 echo "docker arch=$DOCKER_ARCH force_build=$BENCH_FORCE_BUILD agent=$BENCH_AGENT tasks=${#TASKS[@]} concurrency=$BENCH_CONCURRENCY"
@@ -72,7 +77,7 @@ echo "docker arch=$DOCKER_ARCH force_build=$BENCH_FORCE_BUILD agent=$BENCH_AGENT
 harbor run --dataset "$BENCH_DATASET" "${AGENT_ARGS[@]}" \
   --ae "OPENAI_API_KEY=$JEV_ROUTER_TOKEN" --ae "OPENAI_BASE_URL=http://host.docker.internal:$BENCH_PORT/v1" \
   --allow-agent-host host.docker.internal --allow-agent-host 192.168.65.0/24 \
-  "${INCLUDE[@]}" --n-concurrent "$BENCH_CONCURRENCY" --jobs-dir "$BENCH_DIR/jobs" --job-name "tb-$BENCH_AGENT-$CONFIG" \
+  "${INCLUDE[@]}" --n-concurrent "$BENCH_CONCURRENCY" --jobs-dir "$BENCH_DIR/jobs" --job-name "tb-$BENCH_AGENT-$RUN_NAME" \
   "${EXTRA_ARGS[@]}" -y -q
 
-echo "done: config=$CONFIG decisions=$(wc -l < "$JEV_ROUTER_LOG" | tr -d ' ') job=$BENCH_DIR/jobs/tb-$BENCH_AGENT-$CONFIG"
+echo "done: config=$CONFIG run=$RUN_NAME decisions=$(wc -l < "$JEV_ROUTER_LOG" | tr -d ' ') job=$BENCH_DIR/jobs/tb-$BENCH_AGENT-$RUN_NAME"
