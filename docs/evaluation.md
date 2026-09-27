@@ -48,6 +48,8 @@ The runner starts the relay on all interfaces with a generated token, runs Harbo
 
 `scripts/bench-batch.sh fast routed mid -- <task ...>` chains configurations and stops when the OpenRouter key's usage since the batch started exceeds `BENCH_MAX_SPEND_USD` (default 5). It reads the key only from the environment; nothing is written to disk but `$BENCH_DIR/batch.log`.
 
+One trial per task is noise: identical configurations differ by a task or two between runs. `BENCH_ATTEMPTS=3` runs every task three times (job and log are then named `<config>-k3`), and `BENCH_RUN_NAME` names a run explicitly, for example `routed` under an alternative `JEV_ROUTER_POLICY`. Before spending on a live re-run, `jev-router replay --policy candidate.json --log routed.jsonl` shows what the candidate policy would have decided on the recorded judge answers.
+
 ## Routed runs
 
 The relay checks the credential Harbor passes against its token, then swaps in the egress key.
@@ -115,6 +117,46 @@ JEV_ROUTER_LOG=~/.jev-router/tb-routed.jsonl jev-router up --host 0.0.0.0
 ```
 
 Report every baseline, including the ones the router loses to. A router that is cheaper than always-frontier but less successful than always-mid has not won; the honest figure is cost per solved task against the best single model.
+
+## Results
+
+Terminal-Bench 2.0 through Harbor, Pi agent, 2026-09-27. Twelve easy and medium tasks (`fix-git`, `prove-plus-comm`, `cobol-modernization`, `openssl-selfsigned-cert`, `overfull-hbox`, `regex-log`, `log-summary-date-ranges`, `sqlite-db-truncate`, `constraints-scheduling`, `kv-store-grpc`, `vulnerable-secret`, `polyglot-c-py`), images rebuilt natively on an Apple Silicon Mac, inference and judge (`typesafe/jev-1.13`) through OpenRouter with the candidates `init` generates: fast `openai/gpt-6-luna`, mid `anthropic/claude-sonnet-5`, frontier `anthropic/claude-opus-5.5`. Four configurations: the fast tier pinned (one and three attempts per task), routed under the rules 0.1.0 shipped (one attempt), and routed under the rules that are now the default (three attempts). Total spend for everything below, including a mid-pinned baseline stopped after 20 requests ($0.21) to stay within a few dollars: $4.05, of which the judge cost about half a cent.
+
+| config | trials | solved | success | errored | upstream cost | cost / solved | judge calls | judge p50 | judge cost | served |
+|---|---|---|---|---|---|---|---|---|---|---|
+| fast | 12 | 11 | 92% | 0 | $0.027 | $0.0025 | 21 | 247 ms | $0.0007 | fast 87 |
+| fast-k3 | 36 | 32 | 89% | 0 | $0.091 | $0.0028 | 62 | 225 ms | $0.0020 | fast 280 |
+| routed | 12 | 8 | 67% | 0 | $3.62 | $0.45 | 25 | 214 ms | $0.0008 | fast 68, mid 32, frontier 19 |
+| routed-tuned-k3 | 36 | 30 | 83% | 0 | $0.088 | $0.0029 | 62 | 236 ms | $0.0020 | fast 290 |
+
+| task | fast | fast-k3 | routed | routed-tuned-k3 |
+|---|---|---|---|---|
+| cobol-modernization | pass · 47s · $0.0042 · fast 9 | 3/3 · 44s · $0.0039 · fast 25 | pass · 897s · $3.21 · mid 18, frontier 19 | 3/3 · 57s · $0.0049 · fast 37 |
+| constraints-scheduling | pass · 11s · $0.0010 · fast 3 | 3/3 · 11s · $0.0008 · fast 9 | pass · 78s · $0.13 · mid 4 | 3/3 · 10s · $0.0008 · fast 9 |
+| fix-git | pass · 17s · $0.0014 · fast 8 | 3/3 · 24s · $0.0020 · fast 28 | pass · 21s · $0.0019 · fast 9 | 3/3 · 25s · $0.0017 · fast 32 |
+| kv-store-grpc | pass · 21s · $0.0011 · fast 7 | 3/3 · 22s · $0.0011 · fast 24 | fail · 23s · $0.0012 · fast 8 | 3/3 · 24s · $0.0012 · fast 25 |
+| log-summary-date-ranges | pass · 11s · $0.0016 · fast 5 | 3/3 · 11s · $0.0014 · fast 14 | fail · 6s · $0.0013 · fast 3 | 3/3 · 11s · $0.0015 · fast 13 |
+| openssl-selfsigned-cert | pass · 12s · $0.0008 · fast 4 | 3/3 · 13s · $0.0009 · fast 13 | pass · 13s · $0.0009 · fast 4 | 3/3 · 17s · $0.0009 · fast 14 |
+| overfull-hbox | pass · 60s · $0.0054 · fast 13 | 1/3 · 90s · $0.0086 · fast 58 | fail · 117s · $0.012 · fast 22 | 1/3 · 65s · $0.0063 · fast 52 |
+| polyglot-c-py | fail · 42s · $0.0035 · fast 7 | 1/3 · 45s · $0.0038 · fast 21 | fail · 27s · $0.0023 · fast 5 | 0/3 · 50s · $0.0043 · fast 21 |
+| prove-plus-comm | pass · 28s · $0.0017 · fast 12 | 3/3 · 19s · $0.0011 · fast 29 | pass · 11s · $0.0006 · fast 5 | 3/3 · 20s · $0.0011 · fast 32 |
+| regex-log | pass · 24s · $0.0017 · fast 4 | 3/3 · 20s · $0.0016 · fast 12 | pass · 25s · $0.0020 · fast 4 | 2/3 · 23s · $0.0018 · fast 12 |
+| sqlite-db-truncate | pass · 25s · $0.0025 · fast 7 | 3/3 · 29s · $0.0031 · fast 21 | pass · 82s · $0.26 · mid 10 | 3/3 · 25s · $0.0024 · fast 19 |
+| vulnerable-secret | pass · 16s · $0.0020 · fast 8 | 3/3 · 18s · $0.0019 · fast 26 | pass · 17s · $0.0017 · fast 8 | 3/3 · 18s · $0.0025 · fast 24 |
+
+What it shows:
+
+- On tasks this size the fast tier already solves about nine in ten. The best any router can do here is match it at the same cost; the upside of escalation needs harder tasks than this budget allowed.
+- The 0.1.0 rules escalated three tasks to mid on the judge's first-turn difficulty estimate (`difficulty >= 2 or needs_reasoning > 0.8`) and one of those to frontier after a single failed tool call. Success did not improve; the three fast-served failures in that run are the same trial-to-trial variance the three-attempt fast run shows. Cost per solved task rose from $0.0025 to $0.45, most of it one frontier session that ran to the 900 s agent timeout ($3.21).
+- Replaying the recorded judge answers under the tuned rules predicted the routed run's cost would drop from $2.12 to $0.13 on the same tokens. The live three-attempt re-run confirmed it: every request stayed on the fast tier, 30 of 36 solved against 32 of 36 for fast pinned, $0.0029 per solved task against $0.0028, judge overhead $0.002 in total at a median 236 ms.
+- The judge's first-turn difficulty scores on these tasks ran from 1.1 to 2.3 with confidence 0.3 to 0.77. The tuned rule (`difficulty >= 2.5 and needs_reasoning > 0.8`) leaves the first-turn escalation for tasks the judge is sure are hard and need careful reasoning; `spinning > 0.7 or (tools_failed > 0.7 and spinning > 0.5)` waits for repeated failure instead of one bad call. The built-in override for three consecutive all-failure batches still applies.
+
+Caveats, so nobody over-reads this:
+
+- The tuned rules were calibrated on these twelve tasks and then measured on the same twelve. That is an in-sample result. The subset has no hard tasks, so it cannot show the case routing exists for: a fast tier that fails and a capable tier that recovers.
+- Three attempts per task is still small. `overfull-hbox` passed one of three in both three-attempt runs, `polyglot-c-py` zero or one of three, `regex-log` two or three of three.
+- Repeated attempts of one task produce identical prompt prefixes, so the relay keyed them to one session and leases carried across attempts in the three-attempt runs; the harnesses that send session headers (Claude Code, OpenCode) do not have this problem outside Harbor.
+- Rewards are Terminal-Bench's own verifier results; agent time is Harbor's agent phase, excluding image build and agent install.
 
 ## Known gaps
 

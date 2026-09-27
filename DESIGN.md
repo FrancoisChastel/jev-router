@@ -316,13 +316,14 @@ Deviations from the plan worth knowing:
 | Hook signals | Consumed only when a decision takes effect | A failed request should not eat the evidence that made it fail |
 | Cancellation | Client disconnect aborts the upstream call under Node; not detectable under Bun's node:http today | Verified by probing both runtimes; the Node path is covered by a smoke script in the check |
 | Same-session concurrency | Last writer wins in the in-memory store | Rare in practice (retries, duplicate sends); documented rather than serialized, since a stream can take minutes |
+| Default rule thresholds | Escalate on evidence: `difficulty >= 2.5 and needs_reasoning > 0.8`, `spinning > 0.7 or (tools_failed > 0.7 and spinning > 0.5)` | First Terminal-Bench run (12 easy/medium tasks, Pi): the 0.1.0 thresholds escalated a quarter of the tasks on first-turn guesses or a single failed call, gained nothing in success, and cost 180x more per solved task. Replay predicted and a live re-run confirmed the tuned rules match the fast tier. In-sample; hard tasks still to run. See docs/evaluation.md. |
 
 ## 14. Open questions and risks
 
 - Codex request headers for session identity are community-reported; capture a live session to confirm.
 - OpenCode virtual provider via `auth.loader` custom `fetch` is feasible in source but requires a stored auth entry; deferred.
 - Judge is a proprietary API. The interface stays generic; a local judge is a v2 target.
-- Routing quality is unproven until Harbor runs. zDud4s found a classifier that lost to "always cheap". Ship shadow mode and stats first.
+- Routing quality on hard tasks is unmeasured. The first Harbor run covered easy and medium tasks only, where "always cheap" is the ceiling; the 0.1.0 rules lost to it, as zDud4s's classifier did, and the tuned rules tie it. The upside case needs tasks the fast tier fails.
 - Claude Code hint headers require `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`; the installer sets it.
 - Vercel and OpenRouter surfaces evolve; the relay must not allowlist headers or fields.
 

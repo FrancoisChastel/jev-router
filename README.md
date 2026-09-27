@@ -81,7 +81,7 @@ jev-router replay --policy new.json    # re-decide the same log under another po
 jev-router up --shadow frontier        # serve one model, log what the router would have done
 ```
 
-None of this is a benchmark. [docs/evaluation.md](./docs/evaluation.md) is the runbook for Terminal-Bench through Harbor with each harness against single-model baselines. Until that has been run, treat any savings figure as unproven.
+None of this is a benchmark. [docs/evaluation.md](./docs/evaluation.md) is the runbook for Terminal-Bench through Harbor against single-model baselines, and its results section holds the first measured run: a 12-task subset with Pi, where the default rules match the fast tier's success and cost and the earlier rules cost 180x more per solved task for no gain. Harder tasks, where escalation should pay, are not measured yet.
 
 ## Library
 
@@ -100,7 +100,7 @@ const { decision } = outcome.kind === "decision" ? outcome : outcome.conclude((a
 
 ## Status and limits
 
-Early. The mechanics have been verified live against OpenRouter: real judge decisions, and Anthropic streaming, OpenAI chat, and Responses requests routed and echoed correctly. What has not been done: the benchmark that would justify a savings claim, live runs against Vercel and TypeSafe, and the AI SDK middleware. Run the relay with Node; under Bun a client cancellation does not propagate to the upstream. The relay binds to localhost; binding wider requires `--token`.
+Early. The mechanics have been verified live against OpenRouter: real judge decisions, and Anthropic streaming, OpenAI chat, and Responses requests routed and echoed correctly. Measured once on a small, easy Terminal-Bench subset (see [docs/evaluation.md](./docs/evaluation.md#results)); not yet on hard tasks, where the case for escalation would show. Not done: live runs against Vercel and TypeSafe, and the AI SDK middleware. Run the relay with Node; under Bun a client cancellation does not propagate to the upstream. The relay binds to localhost; binding wider requires `--token`.
 
 ## Documentation
 

@@ -2,8 +2,9 @@
 // Join Harbor job results with jev-router decision logs into one comparison table.
 //   node scripts/bench-report.mjs --jobs /tmp/jev-bench/jobs --logs /tmp/jev-bench --policy ~/.jev-router/policy.json routed fast mid
 // Each positional argument is a configuration name: job dir tb-<agent>-<name>, decision log <name>.jsonl.
-// Relay sessions are matched to trials by time window and call count (Pi transcripts), so every task gets its own
-// upstream cost and served-tier mix. Unmatched sessions are reported, never silently dropped.
+// Relay sessions are matched to tasks by time window and call count (Pi transcripts), so every task gets its own
+// upstream cost and served-tier mix. Repeated attempts of one task share a relay session (identical prompt prefix), so
+// matching is per task and per-task cost is the average over its attempts. Unmatched sessions are reported, never dropped.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -67,20 +68,32 @@ function sessionsOf(recs) {
   for (const r of recs) { const k = r.session ?? "?"; if (!m.has(k)) m.set(k, []); m.get(k).push(r); }
   return [...m.entries()].map(([id, rs]) => ({ id, records: rs, first: Math.min(...rs.map((r) => r.ts)), last: Math.max(...rs.map((r) => r.ts)) }));
 }
-// Assign each relay session to at most one trial: the session must fall inside the trial's agent window; prefer an exact
-// call-count match, then the nearest start. Returns trialIndex -> records, plus the sessions nothing claimed.
-function matchSessions(ts, recs) {
+// Group trials by task: window spanning all attempts, total model calls across them.
+function taskGroups(ts) {
+  const groups = new Map();
+  for (const t of ts) {
+    const g = groups.get(t.result.task_name) ?? { name: t.result.task_name, trials: [], window: null, calls: 0, callsKnown: true };
+    g.trials.push(t);
+    if (t.window) g.window = g.window ? [Math.min(g.window[0], t.window[0]), Math.max(g.window[1], t.window[1])] : [...t.window];
+    if (t.calls === null) g.callsKnown = false; else g.calls += t.calls;
+    groups.set(t.result.task_name, g);
+  }
+  return [...groups.values()];
+}
+// Assign each relay session to at most one task: the session must fall inside the task's window; prefer an exact
+// call-count match, then the nearest start. Returns taskName -> records, plus the sessions nothing claimed.
+function matchSessions(groups, recs) {
   const sessions = sessionsOf(recs);
   const claimed = new Map();
   const unmatched = [];
-  const candidates = sessions.map((s) => ts.map((t, i) => ({ i, t })).filter(({ t }) => t.window && s.first >= t.window[0] - WINDOW_MS && s.last <= t.window[1] + WINDOW_MS).map(({ i, t }) => ({ i, exact: t.calls !== null && t.calls === s.records.length, dist: s.first - t.window[0] })));
+  const candidates = sessions.map((s) => groups.filter((g) => g.window && s.first >= g.window[0] - WINDOW_MS && s.last <= g.window[1] + WINDOW_MS).map((g) => ({ name: g.name, exact: g.callsKnown && g.calls === s.records.length, dist: s.first - g.window[0] })));
   const order = sessions.map((_, k) => k).sort((a, b) => candidates[a].length - candidates[b].length);
   for (const k of order) {
-    const free = candidates[k].filter((c) => !claimed.has(c.i)).sort((a, b) => Number(b.exact) - Number(a.exact) || a.dist - b.dist);
+    const free = candidates[k].filter((c) => !claimed.has(c.name)).sort((a, b) => Number(b.exact) - Number(a.exact) || a.dist - b.dist);
     if (free.length === 0) { unmatched.push(sessions[k]); continue; }
-    claimed.set(free[0].i, sessions[k].records);
+    claimed.set(free[0].name, sessions[k].records);
   }
-  return { byTrial: claimed, unmatched };
+  return { byTask: claimed, unmatched };
 }
 
 const usd = (n) => (n === null || n === undefined ? "n/a" : `$${n.toFixed(n < 0.01 && n > 0 ? 4 : n < 0.1 ? 3 : 2)}`);
@@ -93,7 +106,8 @@ const notes = [];
 for (const name of configs) {
   const ts = trials(`tb-${agent}-${name}`).map(({ dir, result }) => ({ result, window: window(result), calls: piResponses(dir) }));
   const recs = logRecords(name);
-  const { byTrial, unmatched } = matchSessions(ts, recs);
+  const groups = taskGroups(ts);
+  const { byTask, unmatched } = matchSessions(groups, recs);
   if (unmatched.length) notes.push(`${name}: ${unmatched.length} relay session(s) with ${unmatched.reduce((s, u) => s + u.records.length, 0)} records matched no trial (their cost is in the config total only).`);
   const solved = ts.filter((t) => (reward(t.result) ?? 0) >= 1).length;
   const errored = ts.filter((t) => t.result.exception_info).length;
@@ -103,11 +117,13 @@ for (const name of configs) {
   const judgeMs = judged.map((r) => r.judge.latencyMs).filter((x) => typeof x === "number").sort((a, b) => a - b);
   const decided = {}; for (const r of recs) decided[r.decision.candidate] = (decided[r.decision.candidate] ?? 0) + 1;
   rows.push({ name, tasks: ts.length, solved, errored, relayCost, judgeCost, judgeCalls: judged.length, judgeP50: judgeMs.length ? judgeMs[Math.floor(judgeMs.length / 2)] : null, mix: mixOf(recs), decided, requests: recs.length });
-  ts.forEach((t, i) => {
-    const rs = byTrial.get(i) ?? [];
-    const m = perTask.get(t.result.task_name) ?? {}; (m[name] ??= []).push({ reward: reward(t.result), secs: t.window ? (t.window[1] - t.window[0]) / 1000 : null, err: t.result.exception_info?.exception_type, cost: rs.length ? rs.reduce((s, r) => s + recordCost(r), 0) : null, mix: mixOf(rs) });
-    perTask.set(t.result.task_name, m);
-  });
+  for (const g of groups) {
+    const rs = byTask.get(g.name) ?? [];
+    const costPerAttempt = rs.length ? rs.reduce((s, r) => s + recordCost(r), 0) / g.trials.length : null;
+    const m = perTask.get(g.name) ?? {};
+    m[name] = g.trials.map((t) => ({ reward: reward(t.result), secs: t.window ? (t.window[1] - t.window[0]) / 1000 : null, err: t.result.exception_info?.exception_type, cost: costPerAttempt, mix: mixOf(rs) }));
+    perTask.set(g.name, m);
+  }
 }
 
 console.log(`# Terminal-Bench 2.0 via Harbor, agent: ${agent}\n`);
@@ -134,4 +150,4 @@ const cell = (list) => {
 for (const [task, m] of [...perTask.entries()].sort()) console.log(`| ${task} | ${configs.map((c) => cell(m[c])).join(" | ")} |`);
 
 for (const n of notes) console.log(`\nNote: ${n}`);
-console.log("\nUpstream cost is what the gateway reported per request in the relay log (list price when absent); per-task cells show the average over that task's trials and which tier served its requests. Cost per solved task is the honest figure; a config that is cheaper but solves fewer tasks has not won.");
+console.log("\nUpstream cost is what the gateway reported per request in the relay log (list price when absent); per-task cells show the average per attempt for that task and which tier served its requests. Cost per solved task is the honest figure; a config that is cheaper but solves fewer tasks has not won.");

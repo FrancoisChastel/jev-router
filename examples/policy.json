@@ -99,7 +99,7 @@
           }
         },
         {
-          "when": "difficulty >= 2 or needs_reasoning > 0.8",
+          "when": "difficulty >= 2.5 and needs_reasoning > 0.8",
           "then": {
             "at_least": "mid"
           }
@@ -118,7 +118,7 @@
           }
         },
         {
-          "when": "tools_failed > 0.7 or spinning > 0.7",
+          "when": "spinning > 0.7 or (tools_failed > 0.7 and spinning > 0.5)",
           "then": {
             "up": 1
           }

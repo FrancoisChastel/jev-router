@@ -29,12 +29,15 @@ export const DEFAULT_CANDIDATES: Readonly<Record<"fast" | "mid" | "frontier", De
   },
 };
 
+// Escalate on evidence, not on an upfront guess: on a 12-task Terminal-Bench subset the earlier thresholds
+// (difficulty >= 2 or needs_reasoning > 0.8; any tools_failed > 0.7) escalated a quarter of the tasks for no gain in
+// success and a 180x higher cost per solved task. See docs/evaluation.md.
 export const DEFAULT_RULES = [
   { when: "request_class in [auxiliary, compaction]", then: { pin: "fast" } },
-  { when: "difficulty >= 2 or needs_reasoning > 0.8", then: { at_least: "mid" } },
+  { when: "difficulty >= 2.5 and needs_reasoning > 0.8", then: { at_least: "mid" } },
   { when: "stakes >= 2.5", then: { at_least: "mid" } },
   { when: "stakes >= 2 and difficulty >= 3", then: { at_least: "frontier", effort: "high" } },
-  { when: "tools_failed > 0.7 or spinning > 0.7", then: { up: 1 } },
+  { when: "spinning > 0.7 or (tools_failed > 0.7 and spinning > 0.5)", then: { up: 1 } },
   { when: "producing > 0.8 and tools_failed < 0.2", then: { allow_down: true } },
 ] as const;
 
