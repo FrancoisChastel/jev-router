@@ -1,6 +1,6 @@
 # jev-router hooks for Codex
 
-Codex hooks are command-only, so each event runs `jev-router hook codex`, which forwards the payload to the relay and always exits 0. Install with `npx jev-router setup --agent codex`, which writes `~/.codex/hooks.json` and the `jev-router` model provider into `~/.codex/config.toml` with backups, or copy `hooks.json` into `~/.codex/` yourself and add:
+Codex hooks are command-only, so each event runs `jev-router hook codex`, which forwards the payload to the relay and always exits 0. Install with `npx @francoischastel/jev-router setup --agent codex`, which writes `~/.codex/hooks.json` and the `jev-router` model provider into `~/.codex/config.toml` with backups, or copy `hooks.json` into `~/.codex/` yourself and add:
 
 ```toml
 model = "auto"

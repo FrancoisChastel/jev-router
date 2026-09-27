@@ -1,11 +1,39 @@
 {
-  "name": "jev-router",
-  "version": "0.0.0",
-  "description": "Harness-agnostic LLM router for agentic coding: Switchyard-style execution signals, jev as the judge, honest measurement.",
+  "name": "@francoischastel/jev-router",
+  "version": "0.1.0",
+  "description": "Route each coding-agent turn to the cheapest model that can finish it. Switchyard-style execution signals, TypeSafe's jev as the judge, and honest cost accounting. Works with Claude Code, Codex, OpenCode, and Pi.",
+  "keywords": [
+    "llm",
+    "router",
+    "model-routing",
+    "jev",
+    "typesafe",
+    "switchyard",
+    "claude-code",
+    "codex",
+    "opencode",
+    "pi",
+    "pi-package",
+    "openrouter",
+    "vercel-ai-gateway",
+    "cost"
+  ],
+  "homepage": "https://github.com/FrancoisChastel/jev-router#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FrancoisChastel/jev-router.git"
+  },
+  "bugs": {
+    "url": "https://github.com/FrancoisChastel/jev-router/issues"
+  },
+  "author": "Francois Chastel",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
+  },
+  "bin": {
+    "jev-router": "./dist/cli/index.js"
   },
   "files": [
     "dist",
@@ -44,6 +72,9 @@
       "default": "./dist/measure/index.js"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "rm -rf dist && bun build src/core/index.ts src/judge/index.ts src/runtime/index.ts src/daemon/index.ts src/measure/index.ts src/adapters/pi/index.ts src/adapters/opencode/index.ts src/cli/index.ts --outdir dist --target node --splitting --external '@earendil-works/*' --external '@opencode-ai/*' && bun build src/adapters/opencode/index.ts --outfile dist/adapters/opencode/plugin.js --target node --external '@opencode-ai/*' && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --outDir dist",
     "typecheck": "tsc --noEmit",
@@ -57,14 +88,6 @@
       "./dist/adapters/pi/index.js"
     ]
   },
-  "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
-    "@earendil-works/pi-ai": "^0.87.1",
-    "@earendil-works/pi-coding-agent": "^0.87.1",
-    "@opencode-ai/plugin": "^1.18.32",
-    "@types/bun": "^1.4.2",
-    "typescript": "^7.0.2"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.87.0",
     "@opencode-ai/plugin": ">=1.0.0"
@@ -77,19 +100,12 @@
       "optional": true
     }
   },
-  "keywords": [
-    "llm",
-    "router",
-    "jev",
-    "typesafe",
-    "switchyard",
-    "pi-package",
-    "claude-code",
-    "codex",
-    "opencode",
-    "openrouter"
-  ],
-  "bin": {
-    "jev-router": "./dist/cli/index.js"
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "@earendil-works/pi-ai": "^0.87.1",
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@opencode-ai/plugin": "^1.18.32",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
   }
 }

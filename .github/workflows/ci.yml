@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: typecheck, lint, test, build, cancellation smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - name: pack and install the tarball under Node
+        run: |
+          set -euo pipefail
+          npm pack --silent
+          mkdir -p /tmp/pkgtest && cd /tmp/pkgtest
+          npm init -y >/dev/null
+          npm install --silent "$GITHUB_WORKSPACE"/francoischastel-jev-router-*.tgz
+          node -e "import('@francoischastel/jev-router/core').then(m => { if (typeof m.plan !== 'function') throw new Error('core export missing'); })"
+          npx jev-router help >/dev/null
+          JEV_ROUTER_HOME=/tmp/pkgtest/home npx jev-router init | grep -q 'policy: wrote'

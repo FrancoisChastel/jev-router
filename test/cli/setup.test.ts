@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { forwardHook } from "../../src/cli/index";
+import { forwardHook } from "../../src/cli/main";
 import { runSetup } from "../../src/cli/setup";
 
 async function exists(path: string): Promise<boolean> {

@@ -1,123 +1,117 @@
 # jev-router
 
-Harness-agnostic LLM router for agentic coding. It routes each turn to the cheapest model and reasoning effort that can finish the job, using Switchyard-style execution signals from tool results and TypeSafe's jev as a fast, calibrated judge.
+[![CI](https://github.com/FrancoisChastel/jev-router/actions/workflows/ci.yml/badge.svg)](https://github.com/FrancoisChastel/jev-router/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@francoischastel/jev-router)](https://www.npmjs.com/package/@francoischastel/jev-router)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Status: early. The core decision engine, judge transports, Pi extension, local relay, hook packs for Claude Code and Codex, OpenCode plugin, installer, and measurement tooling (stats, replay, shadow mode) exist. Not yet done: the Harbor benchmark run that would justify any savings claim, the AI SDK middleware, and expected-value switching with cache affinity. See [DESIGN.md](./DESIGN.md).
+Route every turn of your coding agent to the cheapest model that can finish it.
 
-## Quickstart
+jev-router sits between Claude Code, Codex, OpenCode, or Pi and your model gateway. It watches how the agent is doing, asks [TypeSafe's jev](https://typesafe.ai) a few typed questions when the situation is unclear, and picks a model and reasoning effort per turn. It logs every decision with what it would have cost on every other model, so you can see whether routing pays before you trust it.
 
-One key is enough. The router uses the same key for the jev judge and for inference, so there is one bill.
+- **One key, one bill.** An OpenRouter or Vercel AI Gateway key serves both the judge and inference.
+- **Nothing rewritten but the model.** Requests are forwarded in the client's own wire format. Streaming, tools, thinking, and prompt caching pass through untouched.
+- **Fails open.** Judge down, key missing, model not found: the request goes through on the default model and the log says why.
+- **Honest numbers.** `stats` compares against always-cheap and always-frontier alike, including when the router loses.
+
+## Quick start
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...        # or AI_GATEWAY_API_KEY for Vercel AI Gateway
-npx jev-router init                         # writes ~/.jev-router/policy.json from your keys, with live prices
-npx jev-router ping                         # one real judge call: transport, latency, cost
-npx jev-router setup                        # points Claude Code, Codex, OpenCode, and Pi at the relay (dry-run with --dry-run)
-npx jev-router up                           # start the relay; leave it running
+npm install -g @francoischastel/jev-router
+export OPENROUTER_API_KEY=sk-or-...    # or AI_GATEWAY_API_KEY for Vercel AI Gateway
+
+jev-router init      # writes ~/.jev-router/policy.json from your key, with live prices
+jev-router ping      # one real judge call: transport, latency, cost
+jev-router setup     # points your installed harnesses at the relay (preview with --dry-run)
+jev-router up        # start the relay and leave it running
 ```
 
-`init` and `setup` are idempotent and `up` runs `init` itself when no policy exists, so `npx jev-router up` alone is a valid first command.
+Prefer not to install globally? `npx @francoischastel/jev-router up` works for every command, and `up` creates the policy itself when none exists.
+
+Then use your harness as usual. In Claude Code pick `claude-code/auto` under `/model`; Codex and OpenCode are configured to use the `auto` model by `setup`; Pi runs the extension in-process.
+
+## What you get
 
 | Keys you have | Judge | Inference |
 |---|---|---|
 | `OPENROUTER_API_KEY` | jev through OpenRouter Decisions | OpenRouter |
 | `AI_GATEWAY_API_KEY` | jev through Vercel AI Gateway | Vercel AI Gateway |
-| `TYPESAFE_API_KEY` plus one of the above | jev direct from TypeSafe, with `init --judge typesafe` | that gateway |
-| `TYPESAFE_API_KEY` only | jev direct from TypeSafe | none: the relay has nowhere to send traffic, but the Pi extension routes inside Pi with Pi's own providers |
+| `TYPESAFE_API_KEY` plus one of the above | jev direct from TypeSafe (`init --judge typesafe`) | that gateway |
+| `TYPESAFE_API_KEY` only | jev direct from TypeSafe | none for the relay; the Pi extension still routes with Pi's own providers |
 
-The generated policy has three candidates, fast, mid, and frontier, on models that exist on both gateways, with prices refreshed from the live catalog. Edit `~/.jev-router/policy.json` to change models or rules; `jev-router policy` validates it.
+The generated policy has three candidates on models available on both gateways:
+
+| Tier | Model | When it is chosen |
+|---|---|---|
+| fast | `openai/gpt-6-luna` | Default. Routine edits, lookups, auxiliary calls, compaction |
+| mid | `anthropic/claude-sonnet-5` | Substantial work, anything needing careful reasoning, high stakes such as auth or payments |
+| frontier | `anthropic/claude-opus-5.5` | Deep problems with high stakes, and recovery after repeated tool failures |
+
+Edit `~/.jev-router/policy.json` to change models, prices, or rules. `jev-router policy` validates it. See [docs/policy.md](./docs/policy.md).
 
 ## How it decides
 
-1. Hard overrides: a post-compaction request, three consecutive all-failure tool batches, or a critical error escalate one tier and hold it.
-2. Holds and leases: a clean tool continuation reuses the last decision; nothing is re-judged mid-chain unless something went wrong.
-3. Deterministic signals: recent tool outcomes are scored the Switchyard way (severity, spinning, exploring versus producing). Decisive scores skip the judge.
-4. Judge: on a new user turn, or when the signals are ambiguous, one jev call answers five task questions or three execution questions against a bounded dossier. jev never sees the full conversation.
-5. Policy: plain rules map the answers to a candidate and an effort. Low judge confidence keeps the current tier. Every decision logs raw answers and a counterfactual cost for each candidate.
+1. **Hard overrides.** A request right after context compaction, three consecutive all-failure tool batches, or a critical error escalates one tier and holds it for two turns.
+2. **Holds and leases.** A clean tool continuation reuses the last decision. Nothing is re-judged mid-chain unless something went wrong.
+3. **Tool signals.** Recent tool outcomes are scored the way NVIDIA's Switchyard does it: error severity, spinning, and exploring push toward a capable model, steady production pushes toward a cheap one. A decisive score skips the judge.
+4. **The judge.** On a new user turn, or when the signals are ambiguous, one jev call answers five task questions or three execution questions against a bounded summary. jev never sees the full conversation. It costs about three thousandths of a cent and returns in a few hundred milliseconds.
+5. **Policy.** Plain rules map the answers to a candidate and an effort. Low confidence on a question a rule depends on keeps the current tier.
 
-## Pi extension
+Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the decision and its reasons, whether it took effect, the tokens the upstream reported, and the cost on every other candidate.
 
-Requires Pi 0.87 or later and an OpenRouter, Vercel AI Gateway, or TypeSafe key for the judge.
+## Harnesses
 
-```bash
-export OPENROUTER_API_KEY=sk-or-...   # or AI_GATEWAY_API_KEY, or TYPESAFE_API_KEY (Pi needs no egress)
-npx jev-router init
-pi install npm:jev-router             # once published
-pi -e ./dist/adapters/pi/index.js     # from a checkout, after `bun run build`
-```
+| Harness | How routing is applied | What the harness tells the router |
+|---|---|---|
+| Claude Code | Local relay via `ANTHROPIC_BASE_URL` | Plugin hooks report tool successes and failures, compaction, subagents, API errors; gateway hint headers carry request class |
+| Codex | Local relay as a Responses-API model provider | Hooks report tool results, compaction, prompts |
+| OpenCode | Local relay as an OpenAI-compatible provider | Plugin tags requests with the session and reports tool results, compaction, API errors |
+| Pi | In-process extension, no relay | Everything: prompts, tool results, compaction, model changes |
 
-Inside Pi, `/jev-router status`, `/jev-router off`, and `/jev-router on` control it. Picking a model by hand with `/model` pauses routing until you run `/jev-router on`; the router never fights a manual choice.
-
-Decisions are appended to `~/.jev-router/decisions.jsonl`. Set `JEV_ROUTER_HOME` to move both files, or `JEV_ROUTER_POLICY` and `JEV_ROUTER_LOG` individually.
-
-Candidate models are looked up in Pi's own registry by provider and id. `via: openrouter` maps to Pi's `openrouter` provider and `via: vercel` to `vercel-ai-gateway`; set `pi.provider` or `pi.model` on a candidate to override.
-
-## Local relay for Claude Code, Codex, OpenCode, and any OpenAI-compatible client
-
-The relay speaks each client's own wire format and forwards it unchanged to OpenRouter or Vercel AI Gateway, rewriting only the model and effort. No cross-format translation, so streaming, tool use, thinking, and prompt caching pass through as the client sent them.
-
-Clients pick a route by model id. `auto` is the generic route, and any `<prefix>/auto` such as `claude-code/auto` maps onto it, which matters because Claude Code's picker only shows ids containing `claude`. Any other model id passes straight through to the default egress.
-
-| Harness | Configuration |
-|---|---|
-| Claude Code | `ANTHROPIC_BASE_URL=http://127.0.0.1:4141`, `ANTHROPIC_AUTH_TOKEN=anything`, `ANTHROPIC_API_KEY=""`, `ANTHROPIC_MODEL=claude-code/auto`. Set `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` so the relay receives request class and compaction hints. |
-| Codex | In `~/.codex/config.toml`: `model_provider = "jev"`, `model = "auto"`, and `[model_providers.jev]` with `base_url = "http://127.0.0.1:4141/v1"`, `wire_api = "responses"`, `env_key = "JEV_ROUTER_TOKEN"` (any value). |
-| OpenCode | `npx jev-router setup --agent opencode` adds a `jev-router` provider with an `auto` model and drops a plugin into `~/.config/opencode/plugins/` that tags requests with the session id and reports tool results, compaction, and API errors to the relay. |
-| Pi | Prefer the in-process extension above. To use the relay instead, add a provider with `api: openai-completions`, `baseUrl: http://127.0.0.1:4141/v1`, and a model `auto`. |
-
-OpenRouter's Anthropic-compatible surface has no token-counting endpoint; the relay passes its 404 through and Claude Code falls back to its own estimate, as its gateway guide describes. Responses carry `x-jev-router-model`, `x-jev-router-candidate`, `x-jev-router-effort`, and `x-jev-router-source`, and every decision is appended to `~/.jev-router/decisions.jsonl` with the usage the upstream reported.
-
-Two more endpoints serve plugins: `POST /decide` returns a decision for a request a plugin describes itself, and `POST /observe` accepts hook events such as `{ "session": "cc:<id>", "event": "compaction" }` or `{ "event": "tool_result", "tool": { "name": "Bash", "isError": true, "text": "..." } }` so harness hooks can feed higher-fidelity signals than body parsing recovers.
-
-Run the relay with Node for production use: when a client cancels a streaming response, Node lets the relay cancel the upstream call too, while Bun's Node-compatibility layer currently emits no disconnect signal, so under Bun a cancelled generation runs to completion upstream. The relay binds to localhost by default. Binding anywhere else requires `--token` (or `JEV_ROUTER_TOKEN`), which every request must then present as a bearer token or `x-api-key`, because the relay injects your real provider key.
+`jev-router setup` configures all four and backs up every file it touches. [docs/harnesses.md](./docs/harnesses.md) has the manual steps and the Claude Code marketplace install.
 
 ## Measure before believing
 
-Every decision is one JSONL line: the raw judge answers, the decision and why, whether it was applied, and the tokens the upstream reported. Three commands read it.
-
 ```bash
-jev-router stats                       # actual cost versus "always fast", "always mid", "always frontier"
+jev-router stats                       # actual cost versus every single-model baseline
 jev-router replay --policy new.json    # re-decide the same log under another policy, no judge calls
-jev-router up --shadow frontier        # serve one model for everything, log what the router would have done
+jev-router up --shadow frontier        # serve one model, log what the router would have done
 ```
 
-`stats` reports savings against every single-candidate baseline, including the ones the router loses to. `replay` reuses the recorded judge answers so policy iteration is free, with the caveat that it assumes the same tokens would have flowed through the other model. Shadow mode is how to trial the router on real traffic without letting it touch anything.
-
-None of this is a benchmark. [docs/evaluation.md](./docs/evaluation.md) is the runbook for Harbor runs on Terminal-Bench with Claude Code, Codex, OpenCode, and Pi against single-model baselines. No savings claim should be made before those exist.
-
-## Policy file
-
-`examples/policy.json` is exactly what `init` produces for an OpenRouter key, kept in sync by a test. JSON always works; YAML works under Bun or with the optional `yaml` package installed. Rule expressions are a tiny whitelisted language: identifiers, numbers, strings, comparisons, `in [...]`, `and`, `or`, `not`. Nothing executes.
-
-```json
-{ "when": "stakes >= 2 and difficulty >= 3", "then": { "at_least": "frontier", "effort": "high" } }
-```
-
-Actions: `pin`, `at_least`, `up`, `allow_down`, `effort`, `hold_turns`. A candidate's `effort` list is the set of levels its model actually accepts; decisions are clamped to it before the relay writes the value, so list only levels the upstream supports.
+None of this is a benchmark. [docs/evaluation.md](./docs/evaluation.md) is the runbook for Terminal-Bench through Harbor with each harness against single-model baselines. Until that has been run, treat any savings figure as unproven.
 
 ## Library
 
 ```ts
-import { plan, loadPolicy, emptySession } from "jev-router/core";
-import { HttpJudge } from "jev-router/judge";
+import { plan, loadPolicy, emptySession } from "@francoischastel/jev-router/core";
+import { HttpJudge } from "@francoischastel/jev-router/judge";
 
-const policy = loadPolicy(JSON.parse(await Bun.file("policy.json").text()));
+const policy = loadPolicy(JSON.parse(await readFile("policy.json", "utf8")));
 const judge = new HttpJudge({ transport: "openrouter", apiKey: process.env.OPENROUTER_API_KEY! });
 
 const outcome = plan({ request, session: emptySession(), policy, policyId: "default" });
-const { decision, session } = outcome.kind === "decision"
-  ? outcome
-  : outcome.conclude((await judge.evaluate(outcome.judgeRequest)).answers);
+const { decision } = outcome.kind === "decision" ? outcome : outcome.conclude((await judge.evaluate(outcome.judgeRequest)).answers);
 ```
 
-`plan` is pure: no network, no clock. It either returns a decision or a judge request plus a `conclude` continuation.
+`plan` is pure: no network, no clock. The core and judge modules run on Node, Bun, and edge runtimes.
 
-## Development
+## Status and limits
 
-```bash
-bun install
-bun run check     # typecheck, lint, tests
-bun run build
-```
+Early. The mechanics have been verified live against OpenRouter: real judge decisions, and Anthropic streaming, OpenAI chat, and Responses requests routed and echoed correctly. What has not been done: the benchmark that would justify a savings claim, live runs against Vercel and TypeSafe, and the AI SDK middleware. Run the relay with Node; under Bun a client cancellation does not propagate to the upstream. The relay binds to localhost; binding wider requires `--token`.
+
+## Documentation
+
+- [Design](./DESIGN.md): the architecture, the decision pipeline, and every decision with its rationale
+- [Policy reference](./docs/policy.md)
+- [Harness setup](./docs/harnesses.md)
+- [Evaluation runbook](./docs/evaluation.md)
+- [Changelog](./CHANGELOG.md)
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md). `bun install && bun run check` runs everything CI runs. Security reports go to the address in [SECURITY.md](./SECURITY.md).
+
+## Acknowledgements
+
+The execution-phase routing idea comes from [NVIDIA Switchyard](https://github.com/NVIDIA-NeMo/Switchyard). The judge is [jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev) by TypeSafe. The OpenRouter Decisions and Vercel AI Gateway evaluation surfaces make one-key setups possible.
 
 MIT licensed.

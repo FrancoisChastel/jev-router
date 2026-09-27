@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseUpOptions } from "../../src/cli/index";
+import { parseUpOptions } from "../../src/cli/main";
 
 describe("up options", () => {
   test("parses host, port, shadow, and token with env fallback", () => {
