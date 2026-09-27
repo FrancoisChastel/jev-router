@@ -8,11 +8,13 @@ No savings claim without this. `stats` and `replay` tell you what routing did to
 - A gateway key for the egress in your policy, for example `OPENROUTER_API_KEY`, and the same or another key for the judge
 - The relay: `bun run build` in this repo, or `npm i -g @french-castle/jev-router`
 
-## Apple Silicon: enable Rosetta in Docker Desktop first
+## Apple Silicon: rebuild the task images natively
 
-Terminal-Bench images are x86-64 only. On an Apple Silicon Mac, Docker Desktop runs them under QEMU unless Rosetta is enabled, and the Terminal-Bench verifier, which downloads a standalone CPython through `uv` and runs pytest, segfaults under QEMU. The agent runs and finishes, then every trial scores zero. Observed on a full eight-task run: eight of eight verifiers died with `qemu: uncaught target signal 11`.
+The prebuilt Terminal-Bench images are x86-64 only. Under QEMU emulation on an Apple Silicon Mac the agent runs fine, but the verifier, which downloads a standalone CPython through `uv` and runs pytest, segfaults (`qemu: uncaught target signal 11`) and every trial scores zero. Observed on a full eight-task run: eight of eight verifiers died this way.
 
-Enable **Settings, General, Use Rosetta for x86_64/amd64 emulation on Apple Silicon** in Docker Desktop and restart it before running anything below. On Linux x86-64 hosts this does not apply.
+Every Terminal-Bench task ships its `environment/Dockerfile`, and Harbor's `--force-build` rebuilds from it instead of pulling the prebuilt image. The rebuild targets the Docker daemon's own architecture, so on Apple Silicon the task image, the agent and the verifier all run as native arm64 and the segfault disappears. `scripts/bench-terminal-bench.sh` turns `--force-build` on automatically when the Docker daemon is not amd64 (`BENCH_FORCE_BUILD=0` disables it). The first run of each task pays for the build, typically one to three minutes for apt-based images; Harbor caches the result by content hash.
+
+Three tasks (`filter-js-from-html`, `qemu-startup`, `qemu-alpine-ssh`) install x86-64 binaries in their Dockerfile and cannot be rebuilt for arm64. Enabling Rosetta in Docker Desktop (**Settings, General, Use Rosetta for x86_64/amd64 emulation**) is the alternative that keeps the prebuilt images. On Linux x86-64 hosts none of this applies.
 
 ## Make the relay reachable from the sandbox
 
@@ -43,6 +45,8 @@ node scripts/bench-report.mjs --jobs /tmp/jev-bench/jobs --logs /tmp/jev-bench -
 ```
 
 The runner starts the relay on all interfaces with a generated token, runs Harbor with the Pi adapter (`BENCH_AGENT=opencode` switches harness), and stops the relay. Pass task names as extra arguments to change the subset. The report joins each trial's verifier reward with the relay's decision log for that configuration.
+
+`scripts/bench-batch.sh fast routed mid -- <task ...>` chains configurations and stops when the OpenRouter key's usage since the batch started exceeds `BENCH_MAX_SPEND_USD` (default 5). It reads the key only from the environment; nothing is written to disk but `$BENCH_DIR/batch.log`.
 
 ## Routed runs
 
