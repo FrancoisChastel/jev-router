@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import type { JudgeTransport } from "../core/policy/types";
+import { taskPhaseQuestions } from "../core/questions";
 import { startDaemon } from "../daemon/server";
 import type { FetchLike } from "../judge/http";
 import { replay } from "../measure/replay";
 import { parseLog, summarize } from "../measure/stats";
+import type { EgressName } from "../runtime/defaults";
+import { describeDetection, initPolicy } from "../runtime/init";
 import { createJudge } from "../runtime/judge-factory";
 import { JsonlLogger } from "../runtime/log";
 import { decisionsLogPath, resolvePolicyPath } from "../runtime/paths";
@@ -12,6 +16,10 @@ import { AGENTS, type Agent, runSetup } from "./setup";
 
 const USAGE = `jev-router <command>
 
+  init [--force] [--judge openrouter|vercel|typesafe] [--egress openrouter|vercel]
+                                        write ~/.jev-router/policy.json from the keys in your environment
+                                        (OPENROUTER_API_KEY, AI_GATEWAY_API_KEY, TYPESAFE_API_KEY) with live prices
+  ping                                  ask the judge one question and report latency and cost
   up [--host 127.0.0.1] [--port 4141] [--shadow <candidate>] [--token <secret>]
                                         start the local relay and decision service; --shadow serves one
                                         candidate for everything and only logs what the router would do;
@@ -50,8 +58,57 @@ export function parseUpOptions(args: readonly string[], env: Readonly<Record<str
   return { host: flag(args, "--host") ?? "127.0.0.1", port, ...(shadow ? { shadow } : {}), ...(token ? { token } : {}) };
 }
 
-async function up(args: readonly string[]): Promise<void> {
+/** Create the policy from the environment when none exists yet, so `up` and `setup` work with zero configuration. */
+async function ensurePolicy(log: (line: string) => void): Promise<string> {
   const policyPath = await resolvePolicyPath();
+  const r = await initPolicy({ path: policyPath, log });
+  if (r.written) for (const line of describeDetection(r.detection)) log(`  ${line}`);
+  return policyPath;
+}
+
+async function init(args: readonly string[]): Promise<void> {
+  const judge = flag(args, "--judge") as JudgeTransport | undefined;
+  const egress = flag(args, "--egress") as EgressName | undefined;
+  const r = await initPolicy({
+    path: await resolvePolicyPath(),
+    force: args.includes("--force"),
+    ...(judge ? { judge } : {}),
+    ...(egress ? { egress } : {}),
+    log: (l) => console.log(l),
+  });
+  for (const line of describeDetection(r.detection)) console.log(`  ${line}`);
+  console.log(`  prices  ${r.pricesFrom}`);
+  console.log(
+    `  models  ${Object.entries(r.policy.candidates)
+      .map(([id, c]) => `${id}=${c.model}`)
+      .join("  ")}`,
+  );
+  console.log("next: `jev-router ping` to test the judge, `jev-router setup` to point your harnesses at it, `jev-router up` to start");
+}
+
+async function ping(): Promise<void> {
+  const policy = await readPolicyFile(await resolvePolicyPath());
+  const judge = createJudge(policy.judge);
+  if (!judge)
+    throw new Error(
+      "no judge configured: set OPENROUTER_API_KEY, AI_GATEWAY_API_KEY, or TYPESAFE_API_KEY and run `jev-router init --force`",
+    );
+  const res = await judge.evaluate({
+    state: { harness: "cli", task: "rename a variable in one file", tools: ["Read", "Edit"], recent_tools: [], images: false },
+    questions: taskPhaseQuestions(),
+    sessionId: "ping",
+  });
+  const d = res.answers.difficulty;
+  console.log(
+    `judge ok: ${policy.judge.transport} -> ${res.model} in ${Math.round(res.latencyMs)} ms${res.usage.costUsd !== undefined ? `, $${res.usage.costUsd.toFixed(6)}` : ""}`,
+  );
+  console.log(
+    `  sample: difficulty ${d?.type === "score" ? d.score.toFixed(2) : "?"} for "rename a variable in one file" (0 trivial .. 3 deep)`,
+  );
+}
+
+async function up(args: readonly string[]): Promise<void> {
+  const policyPath = await ensurePolicy((l) => console.error(l));
   const policy = await readPolicyFile(policyPath);
   const judge = createJudge(policy.judge);
   const logger = new JsonlLogger(decisionsLogPath());
@@ -96,14 +153,13 @@ async function setup(args: readonly string[]): Promise<void> {
   const agents = (requested.length > 0 ? requested : AGENTS) as readonly Agent[];
   const port = Number(flag(args, "--port") ?? 4141);
   const setupToken = flag(args, "--token") ?? process.env.JEV_ROUTER_TOKEN;
-  const examplePolicy = new URL("../../examples/policy.json", import.meta.url).pathname;
+  await ensurePolicy((l) => console.log(l));
   await runSetup({
     agents,
     baseUrl: `http://127.0.0.1:${port}`,
     hookCommand: process.argv[1] ? `${process.execPath} ${process.argv[1]}` : "jev-router",
     dryRun: args.includes("--dry-run"),
     ...(setupToken ? { token: setupToken } : {}),
-    examplePolicyPath: examplePolicy,
     openCodePluginPath: new URL("../adapters/opencode/plugin.js", import.meta.url).pathname,
     log: (line) => console.log(line),
   });
@@ -139,7 +195,7 @@ async function hook(args: readonly string[]): Promise<void> {
   console.log(await forwardHook(harness, Buffer.concat(chunks).toString("utf8"), token ? { token } : {}));
 }
 
-const usd = (n: number): string => `$${n.toFixed(4)}`;
+const usd = (n: number): string => `$${n.toFixed(n !== 0 && Math.abs(n) < 0.01 ? 6 : 4)}`;
 const pct = (n: number | null): string => (n === null ? "n/a" : `${(n * 100).toFixed(1)}%`);
 
 async function loadLog(args: readonly string[]): Promise<ReturnType<typeof parseLog>> {
@@ -161,7 +217,7 @@ async function stats(args: readonly string[]): Promise<void> {
     `decisions ${s.decisions} across ${s.sessions} sessions (${s.withUsage} with usage${skipped ? `, ${skipped} malformed lines skipped` : ""})`,
   );
   console.log(
-    `actual cost ${usd(s.actualCostUsd)}   judge ${s.judge.calls} calls ${usd(s.judge.costUsd)} p50 ${s.judge.latencyP50Ms ?? "-"}ms p95 ${s.judge.latencyP95Ms ?? "-"}ms, ${s.judge.failures} failed   apply failures ${s.applyFailures}`,
+    `actual cost ${usd(s.actualCostUsd)}   judge ${s.judge.calls} calls ${usd(s.judge.costUsd)} p50 ${s.judge.latencyP50Ms === null ? "-" : Math.round(s.judge.latencyP50Ms)}ms p95 ${s.judge.latencyP95Ms === null ? "-" : Math.round(s.judge.latencyP95Ms)}ms, ${s.judge.failures} failed   apply failures ${s.applyFailures}`,
   );
   console.log("baseline            cost      savings    pct");
   for (const [id, b] of Object.entries(s.baselines))
@@ -192,6 +248,8 @@ async function replayCmd(args: readonly string[]): Promise<void> {
 
 async function main(argv: readonly string[]): Promise<void> {
   const [command, ...rest] = argv;
+  if (command === "init") return init(rest);
+  if (command === "ping") return ping();
   if (command === "up") return up(rest);
   if (command === "setup") return setup(rest);
   if (command === "hook") return hook(rest);

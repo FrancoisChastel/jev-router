@@ -237,6 +237,18 @@ describe("conclude: judge-driven paths", () => {
     expect(decision.reasons).toContain("judge_empty");
   });
 
+  test("low confidence on a question no rule references does not gate the decision", () => {
+    const { decision } = judged(req(), emptySession(), {
+      difficulty: score(2.6),
+      needs_reasoning: noul(0.3),
+      stakes: score(1),
+      output_kind: choice("code_edit", 0.2),
+      long_context: noul(0.1),
+    });
+    expect(decision.candidate).toBe("mid");
+    expect(decision.reasons).not.toContain("low_confidence");
+  });
+
   test("a non-finite confidence fails closed to the current tier", () => {
     const { decision } = judged(req(), emptySession(), {
       difficulty: { type: "score", score: 3.4, probabilities: {}, confidence: Number.NaN },

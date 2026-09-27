@@ -272,6 +272,20 @@ describe("relay: anthropic messages", () => {
     expect(records).toHaveLength(0);
   });
 
+  test("any prefixed /auto id routes through the generic auto route", async () => {
+    reset();
+    upstreamMode = "json";
+    const res = await fetch(`${daemon.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-claude-code-session-id": "prefixed-1" },
+      body: JSON.stringify(anthropicBody("claude/auto", { stream: false })),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-jev-router-source")).not.toBe("passthrough");
+    expect(((await res.json()) as { model: string }).model).toBe("claude/auto");
+    expect(records).toHaveLength(1);
+  });
+
   test("count_tokens never routes, never logs, and uses the session's current model", async () => {
     reset();
     const before = judge.requests.length;

@@ -1,3 +1,7 @@
+export type { CatalogEntry, DefaultCandidate, EgressName, KeyDetection } from "./defaults";
+export { buildDefaultPolicy, DEFAULT_CANDIDATES, DEFAULT_RULES, detectKeys, EGRESS_DEFAULTS, parseOpenRouterCatalog } from "./defaults";
+export type { InitOptions, InitResult } from "./init";
+export { describeDetection, initPolicy } from "./init";
 export type { JudgeFactoryOptions } from "./judge-factory";
 export { createJudge } from "./judge-factory";
 export { JsonlLogger } from "./log";

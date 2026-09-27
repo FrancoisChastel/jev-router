@@ -26,7 +26,6 @@ describe("runSetup", () => {
         agents: ["claude-code", "codex", "opencode"] as const,
         baseUrl: "http://127.0.0.1:4141",
         hookCommand: "/bin/jev-router",
-        examplePolicyPath: "examples/policy.json",
         home,
         log: (l: string) => lines.push(l),
       };
@@ -40,7 +39,6 @@ describe("runSetup", () => {
       expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:4141");
       expect(await readFile(join(home, ".codex", "config.toml"), "utf8")).toContain("[model_providers.jev-router]");
       expect(await exists(join(home, ".codex", "hooks.json"))).toBe(true);
-      expect(await exists(join(routerHome, "policy.json"))).toBe(true);
 
       await writeFile(join(home, ".claude", "settings.json"), JSON.stringify({ env: { FOO: "bar" } }));
       await runSetup({ ...base, dryRun: false, token: "t0k" });

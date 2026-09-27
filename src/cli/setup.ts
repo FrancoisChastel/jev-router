@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { configDir, resolvePolicyPath } from "../runtime/paths";
+import { resolvePolicyPath } from "../runtime/paths";
 import { type JsonObject, planClaudeCodeSettings, planCodexConfig, planCodexHooks, planOpenCodeConfig, type SetupTarget } from "./plans";
 
 export type Agent = "claude-code" | "codex" | "opencode" | "pi";
@@ -14,7 +14,6 @@ export interface SetupOptions {
   readonly token?: string;
   readonly dryRun: boolean;
   readonly home?: string;
-  readonly examplePolicyPath?: string;
   /** Standalone OpenCode plugin bundle to copy into OpenCode's plugin directory. */
   readonly openCodePluginPath?: string;
   readonly log: (line: string) => void;
@@ -62,13 +61,7 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
   const home = opts.home ?? homedir();
   const target: SetupTarget = { baseUrl: opts.baseUrl, hookCommand: opts.hookCommand, ...(opts.token ? { token: opts.token } : {}) };
 
-  const policyPath = await resolvePolicyPath();
-  if ((await readText(policyPath)) === undefined && opts.examplePolicyPath) {
-    opts.log(`policy: none at ${configDir()}; seeding from the example`);
-    await writeWithBackup(policyPath, (await readText(opts.examplePolicyPath)) ?? "", opts);
-  } else {
-    opts.log(`policy: ${policyPath}`);
-  }
+  opts.log(`policy: ${await resolvePolicyPath()}`);
 
   for (const agent of opts.agents) {
     opts.log(`${agent}:`);

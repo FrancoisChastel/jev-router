@@ -129,10 +129,18 @@ function flattenAnswers(answers: Readonly<Record<string, Answer>>): ExprContext 
   return ctx;
 }
 
-/** Minimum confidence across choice and score answers. A missing or non-finite confidence counts as zero. */
-function minConfidence(answers: Readonly<Record<string, Answer>>): number {
+/**
+ * Minimum confidence across the choice and score answers that the policy's rules actually reference.
+ * Questions no rule reads cannot gate the decision. A missing or non-finite confidence counts as zero.
+ */
+function minConfidence(answers: Readonly<Record<string, Answer>>, def: PolicyDef): number {
+  const referenced = new Set<string>();
+  for (const rule of def.rules) for (const id of rule.expr.identifiers) referenced.add(id.replace(/\.confidence$/, ""));
   let min = 1;
-  for (const a of Object.values(answers)) if (a.type !== "noul") min = Math.min(min, finite(a.confidence) ? a.confidence : 0);
+  for (const [id, a] of Object.entries(answers)) {
+    if (a.type === "noul" || !referenced.has(id)) continue;
+    min = Math.min(min, finite(a.confidence) ? a.confidence : 0);
+  }
   return min;
 }
 
@@ -292,7 +300,7 @@ export function plan(input: PlanInput): PlanOutcome {
     }
 
     const full: ExprContext = { ...ctx, ...flattenAnswers(answers) };
-    const confidence = minConfidence(answers);
+    const confidence = minConfidence(answers, def);
     if (confidence < def.min_confidence) {
       return finish(baseline, "judge", { reasons: ["low_confidence"], lease: "tool_chain", confidence, ...fallbackOpt });
     }

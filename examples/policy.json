@@ -2,6 +2,8 @@
   "version": 1,
   "judge": {
     "transport": "openrouter",
+    "model": "typesafe/jev-1.13",
+    "api_key_env": "OPENROUTER_API_KEY",
     "timeout_ms": 1500,
     "on_error": "fail_open",
     "mode": "signals"
@@ -14,44 +16,72 @@
   },
   "candidates": {
     "fast": {
+      "model": "openai/gpt-6-luna",
       "via": "openrouter",
-      "model": "openai/gpt-5.4-mini",
       "price": {
-        "in": 0.15,
-        "out": 0.6
-      }
-    },
-    "mid": {
-      "via": "openrouter",
-      "model": "anthropic/claude-sonnet-5",
-      "price": {
-        "in": 3,
-        "out": 15
+        "in": 0.1,
+        "out": 0.5
       },
       "effort": [
         "low",
         "medium",
         "high"
-      ]
+      ],
+      "capabilities": {
+        "vision": true,
+        "tools": true,
+        "context": 1050000
+      }
     },
-    "frontier": {
+    "mid": {
+      "model": "anthropic/claude-sonnet-5",
       "via": "openrouter",
-      "model": "openai/gpt-6-astra",
       "price": {
-        "in": 10,
-        "out": 40
+        "in": 2,
+        "out": 10
       },
       "effort": [
+        "low",
         "medium",
         "high",
         "xhigh"
-      ]
+      ],
+      "capabilities": {
+        "vision": true,
+        "tools": true,
+        "context": 1000000
+      }
+    },
+    "frontier": {
+      "model": "anthropic/claude-opus-5.5",
+      "via": "openrouter",
+      "price": {
+        "in": 4,
+        "out": 20
+      },
+      "effort": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "capabilities": {
+        "vision": true,
+        "tools": true,
+        "context": 1000000
+      }
     }
   },
   "routes": [
     {
       "id": "auto",
       "harness": "any",
+      "policy": "default"
+    },
+    {
+      "id": "claude-code/auto",
+      "harness": "claude-code",
       "policy": "default"
     }
   ],
@@ -70,6 +100,12 @@
         },
         {
           "when": "difficulty >= 2 or needs_reasoning > 0.8",
+          "then": {
+            "at_least": "mid"
+          }
+        },
+        {
+          "when": "stakes >= 2.5",
           "then": {
             "at_least": "mid"
           }

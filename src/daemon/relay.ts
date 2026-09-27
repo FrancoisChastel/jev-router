@@ -30,14 +30,20 @@ export interface RelayDeps {
 
 const CHARS_PER_TOKEN = 4;
 
+/**
+ * Exact route id first, then any `<prefix>/auto` maps onto the `auto` route so picker-friendly names such as
+ * `claude-code/auto` or `claude/auto` route even when the policy only declares `auto`, then a `*` catch-all.
+ */
 function findRoute(policy: Policy, id: string, harness: Harness): RouteInput | undefined {
-  const exact = policy.routes.filter((r) => r.id === id);
-  return (
-    exact.find((r) => r.harness === harness) ??
-    exact.find((r) => r.harness === "any") ??
-    exact[0] ??
-    policy.routes.find((r) => r.id === "*")
-  );
+  const pick = (candidates: readonly RouteInput[]) =>
+    candidates.find((r) => r.harness === harness) ?? candidates.find((r) => r.harness === "any") ?? candidates[0];
+  const exact = pick(policy.routes.filter((r) => r.id === id));
+  if (exact) return exact;
+  if (id.endsWith("/auto")) {
+    const generic = pick(policy.routes.filter((r) => r.id === "auto"));
+    if (generic) return generic;
+  }
+  return policy.routes.find((r) => r.id === "*");
 }
 
 function defaultEgress(policy: Policy): { readonly name: string; readonly egress: EgressInput } | undefined {
