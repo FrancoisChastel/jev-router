@@ -27,11 +27,21 @@ export interface DecisionRecord {
   readonly decision: Decision;
   /** Whether the adapter managed to apply the decision. Absent when the adapter has nothing to apply. */
   readonly apply?: ApplyOutcome;
+  readonly usage?: TokenUsage;
 }
 
 export interface ApplyOutcome {
   readonly ok: boolean;
   readonly error?: string;
+}
+
+/** Provider-neutral token usage as observed on the response. */
+export interface TokenUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens?: number;
+  readonly cacheWriteTokens?: number;
+  readonly costUsd?: number;
 }
 
 export interface RecordInput {
@@ -44,6 +54,7 @@ export interface RecordInput {
   readonly stage?: StageScore;
   readonly judge?: JudgeTrace;
   readonly apply?: ApplyOutcome;
+  readonly usage?: TokenUsage;
 }
 
 export function buildDecisionRecord(input: RecordInput): DecisionRecord {
@@ -61,5 +72,6 @@ export function buildDecisionRecord(input: RecordInput): DecisionRecord {
     ...(input.judge ? { judge: input.judge } : {}),
     decision: input.decision,
     ...(input.apply ? { apply: input.apply } : {}),
+    ...(input.usage ? { usage: input.usage } : {}),
   };
 }

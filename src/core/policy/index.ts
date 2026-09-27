@@ -228,8 +228,9 @@ export function loadPolicy(input: PolicyInput | unknown): Policy {
         typeof e.base_url === "string" &&
         e.base_url !== "" &&
         (e.api_key_env === undefined || typeof e.api_key_env === "string") &&
-        (e.pi_provider === undefined || typeof e.pi_provider === "string");
-      if (!ok) fail(`egress '${name}' needs a base_url string and optional api_key_env / pi_provider strings`);
+        (e.pi_provider === undefined || typeof e.pi_provider === "string") &&
+        (e.forward_auth === undefined || typeof e.forward_auth === "boolean");
+      if (!ok) fail(`egress '${name}' needs a base_url string and optional api_key_env / pi_provider strings and forward_auth boolean`);
       egress[name] = e as unknown as EgressInput;
     }
   }

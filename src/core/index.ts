@@ -6,7 +6,7 @@ export type { Dossier, DossierOptions, DossierTool } from "./dossier";
 export { buildDossier, DOSSIER_LIMITS } from "./dossier";
 export * from "./policy";
 export { executionPhaseQuestions, optionPickQuestion, taskPhaseQuestions } from "./questions";
-export type { ApplyOutcome, DecisionRecord, JudgeTrace, RecordInput } from "./record";
+export type { ApplyOutcome, DecisionRecord, JudgeTrace, RecordInput, TokenUsage } from "./record";
 export { buildDecisionRecord } from "./record";
 export type { AdvanceOptions, SessionKey } from "./session";
 export { advanceSession, emptySession, resolveSessionKey } from "./session";

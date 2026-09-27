@@ -19,6 +19,8 @@ export interface EgressInput {
   readonly api_key_env?: string;
   /** Pi provider name that serves this egress, when it differs from the egress key. */
   readonly pi_provider?: string;
+  /** Forward the caller's own credentials instead of the configured key. */
+  readonly forward_auth?: boolean;
 }
 
 export interface CandidateCapabilities {

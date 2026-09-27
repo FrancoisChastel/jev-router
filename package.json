@@ -28,10 +28,14 @@
     "./adapters/pi": {
       "types": "./dist/adapters/pi/index.d.ts",
       "default": "./dist/adapters/pi/index.js"
+    },
+    "./daemon": {
+      "types": "./dist/daemon/index.d.ts",
+      "default": "./dist/daemon/index.js"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && bun build src/core/index.ts src/judge/index.ts src/runtime/index.ts src/adapters/pi/index.ts --outdir dist --target node --splitting --external '@earendil-works/*' && tsc --emitDeclarationOnly --declaration --outDir dist",
+    "build": "rm -rf dist && bun build src/core/index.ts src/judge/index.ts src/runtime/index.ts src/daemon/index.ts src/adapters/pi/index.ts src/cli/index.ts --outdir dist --target node --splitting --external '@earendil-works/*' && tsc --emitDeclarationOnly --declaration --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "biome check .",
@@ -70,5 +74,8 @@
     "codex",
     "opencode",
     "openrouter"
-  ]
+  ],
+  "bin": {
+    "jev-router": "./dist/cli/index.js"
+  }
 }

@@ -211,7 +211,7 @@ Rule expressions are a tiny, whitelisted grammar: identifiers, numeric compariso
 
 - Ingress dialects: Anthropic Messages, OpenAI Responses, OpenAI chat. Streaming in every dialect.
 - Egress: same dialect to a gateway that serves it for any model. OpenRouter serves `/api/v1/messages`, `/api/v1/responses`, `/api/v1/chat/completions`. Vercel serves `/v1/messages`, `/v1/responses`, `/v1/chat/completions`, plus `/claude-code` and `/codex/v1` surfaces. Direct provider only when the dialect matches.
-- The relay rewrites `model` and effort (Anthropic `output_config` / `thinking`, OpenAI `reasoning.effort`), nothing else.
+- The relay rewrites `model` and effort, nothing else. OpenAI chat uses `reasoning_effort`, Responses uses `reasoning.effort`, and Anthropic uses `output_config.effort` with values low, medium, high, xhigh, max. The Anthropic field is only rewritten when the client already sent it. Anthropic invalidates the prompt cache when top-level effort changes between requests, so effort changes count as a cache loss in the switch cost, and per-message effort (beta) is the v2 path for cache-preserving changes.
 - Responses echo the requested model id. Real routing goes in headers: `x-jev-router-model`, `x-jev-router-candidate`, `x-jev-router-source`, `x-jev-router-decision-id`.
 
 ### 8.1 Claude Code conformance checklist (from Anthropic's gateway compatibility guide)

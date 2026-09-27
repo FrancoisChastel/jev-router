@@ -1,0 +1,233 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { Policy } from "../core/policy/types";
+import type { DecisionRecord } from "../core/record";
+import type { Harness, RequestClass, ToolOutcome } from "../core/types";
+import type { Judge } from "../judge/types";
+import { DIALECTS } from "./dialects";
+import { asEffort, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
+import { errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
+import { relay } from "./relay";
+import { RouterService } from "./service";
+import { type ObserveEvent, SessionStore } from "./session-store";
+
+export interface DaemonOptions {
+  readonly policy: Policy;
+  readonly judge?: Judge;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly log?: (record: DecisionRecord) => void;
+  readonly host?: string;
+  readonly port?: number;
+  readonly fetch?: typeof fetch;
+  readonly now?: () => number;
+  readonly randomId?: () => string;
+  readonly maxBodyBytes?: number;
+}
+
+export interface RunningDaemon {
+  readonly url: string;
+  readonly port: number;
+  readonly host: string;
+  readonly store: SessionStore;
+  close(): Promise<void>;
+}
+
+const DEFAULT_MAX_BODY = 64 * 1024 * 1024;
+const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "hermes", "unknown"]);
+const OBSERVE_KINDS: ReadonlySet<string> = new Set(["tool_result", "compaction", "api_error", "subagent_start", "prompt"]);
+
+function dialectForPath(path: string): DialectAdapter | undefined {
+  if (path === "/v1/messages") return DIALECTS.anthropic;
+  if (path === "/v1/chat/completions") return DIALECTS["openai-chat"];
+  if (path === "/v1/responses") return DIALECTS["openai-responses"];
+  return undefined;
+}
+
+function modelsListing(policy: Policy): string {
+  const data = policy.routes
+    .filter((r) => r.id !== "*")
+    .map((r) => ({
+      id: r.id,
+      object: "model",
+      created: 0,
+      owned_by: "jev-router",
+      display_name: r.id,
+      description: `jev-router policy '${r.policy}' for ${r.harness}`,
+    }));
+  return JSON.stringify({
+    object: "list",
+    data,
+    has_more: false,
+    first_id: data[0]?.id ?? null,
+    last_id: data[data.length - 1]?.id ?? null,
+  });
+}
+
+function isObject(v: unknown): v is JsonObject {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Build a NormalizedBody from the loosely-typed /decide payload sent by in-process plugins. */
+function bodyFromDecidePayload(raw: JsonObject): NormalizedBody {
+  const r = isObject(raw.request) ? raw.request : {};
+  const outcomes: ToolOutcome[] = Array.isArray(r.toolOutcomes)
+    ? r.toolOutcomes.filter(isObject).map((o) => ({
+        name: String(o.name ?? "unknown"),
+        isError: o.isError === true,
+        ...(typeof o.errorText === "string" ? { errorText: o.errorText.slice(-200) } : {}),
+        ...(typeof o.excerpt === "string" ? { excerpt: o.excerpt.slice(-200) } : {}),
+      }))
+    : [];
+  return {
+    requestedModel: typeof r.requestedModel === "string" ? r.requestedModel : "auto",
+    isNewUserTurn: r.isNewUserTurn !== false,
+    ...(typeof r.lastUserText === "string" ? { lastUserText: r.lastUserText } : {}),
+    ...(typeof r.assistantIntentTail === "string" ? { assistantIntentTail: r.assistantIntentTail } : {}),
+    toolNames: Array.isArray(r.toolNames) ? r.toolNames.filter((t): t is string => typeof t === "string") : [],
+    hasImages: r.hasImages === true,
+    toolOutcomes: outcomes,
+    ...(asEffort(r.requestedEffort) ? { requestedEffort: asEffort(r.requestedEffort) as NonNullable<ReturnType<typeof asEffort>> } : {}),
+    stream: false,
+    prefixDigestInput: "",
+  };
+}
+
+export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
+  const env = opts.env ?? process.env;
+  const store = new SessionStore();
+  const service = new RouterService({
+    policy: opts.policy,
+    judge: opts.judge,
+    store,
+    log: opts.log ?? (() => undefined),
+    now: opts.now ?? (() => Date.now()),
+    randomId: opts.randomId ?? (() => crypto.randomUUID()),
+  });
+  const relayDeps = { policy: opts.policy, service, env, fetch: opts.fetch ?? fetch };
+  const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
+
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
+    const method = req.method ?? "GET";
+    const headers = flattenHeaders(req);
+
+    if (method === "HEAD" && path === "/api/hello") {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    if (method === "GET" && path === "/healthz") {
+      sendJson(res, 200, JSON.stringify({ ok: true, sessions: store.size }));
+      return;
+    }
+    if (method === "GET" && path === "/v1/models") {
+      sendJson(res, 200, modelsListing(opts.policy));
+      return;
+    }
+
+    if (method === "POST") {
+      let raw: string;
+      try {
+        raw = await readJsonBody(req, maxBody);
+      } catch (e) {
+        sendJson(res, 413, errorBody(dialectForPath(path)?.dialect, 413, e instanceof Error ? e.message : String(e)));
+        return;
+      }
+
+      const dialect = dialectForPath(path);
+      if (dialect) {
+        await relay(relayDeps, { req, res, headers, dialect, path, query: url.search, rawBody: raw });
+        return;
+      }
+      if (path === "/v1/messages/count_tokens") {
+        await relay(relayDeps, {
+          req,
+          res,
+          headers,
+          dialect: DIALECTS.anthropic,
+          path,
+          query: url.search,
+          rawBody: raw === "" ? "{}" : raw,
+        });
+        return;
+      }
+      if (path === "/observe") {
+        let event: unknown;
+        try {
+          event = JSON.parse(raw);
+        } catch {
+          sendJson(res, 400, errorBody(undefined, 400, "invalid JSON"));
+          return;
+        }
+        if (!isObject(event) || typeof event.session !== "string" || !OBSERVE_KINDS.has(String(event.event))) {
+          sendJson(res, 400, errorBody(undefined, 400, "observe needs { session, event }"));
+          return;
+        }
+        store.observe(event as unknown as ObserveEvent);
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (path === "/decide") {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(raw);
+        } catch {
+          sendJson(res, 400, errorBody(undefined, 400, "invalid JSON"));
+          return;
+        }
+        if (!isObject(payload) || typeof payload.sessionKey !== "string") {
+          sendJson(res, 400, errorBody(undefined, 400, "decide needs { sessionKey, request }"));
+          return;
+        }
+        const harness = HARNESSES.has(String(payload.harness)) ? (payload.harness as Harness) : "unknown";
+        const policyId =
+          typeof payload.policyId === "string" && opts.policy.policies[payload.policyId]
+            ? payload.policyId
+            : (opts.policy.routes.find((r) => r.harness === harness || r.harness === "any")?.policy ??
+              Object.keys(opts.policy.policies)[0] ??
+              "default");
+        const body = bodyFromDecidePayload(payload);
+        const requestClass = typeof payload.requestClass === "string" ? (payload.requestClass as RequestClass) : undefined;
+        const decided = await service.decide({
+          harness,
+          sessionKey: payload.sessionKey,
+          policyId,
+          body,
+          ...(requestClass ? { requestClass } : {}),
+          ...(payload.contextCompacted === true ? { contextCompacted: true } : {}),
+          estimatedInputTokens: typeof payload.estimatedInputTokens === "number" ? payload.estimatedInputTokens : 0,
+        });
+        const record = decided.commit({ ok: true });
+        sendJson(res, 200, JSON.stringify({ decision: decided.decision, recordId: record.id }));
+        return;
+      }
+    }
+    sendJson(res, 404, errorBody(dialectForPath(path)?.dialect, 404, `no handler for ${method} ${path}`));
+  };
+
+  const server: Server = createServer((req, res) => {
+    handle(req, res).catch((e: unknown) => {
+      if (!res.headersSent) sendJson(res, 500, errorBody(undefined, 500, e instanceof Error ? e.message : String(e)));
+      else res.destroy();
+    });
+  });
+  const host = opts.host ?? "127.0.0.1";
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(opts.port ?? 0, host, () => resolve());
+  });
+  const addr = server.address();
+  const port = typeof addr === "object" && addr ? addr.port : (opts.port ?? 0);
+  return {
+    url: `http://${host}:${port}`,
+    port,
+    host,
+    store,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections?.();
+        server.close(() => resolve());
+      }),
+  };
+}
