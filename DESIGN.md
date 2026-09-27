@@ -314,6 +314,7 @@ Deviations from the plan worth knowing:
 | Relay auth | Loopback needs no token; any other bind requires a bearer token on every endpoint but health | The relay injects real provider keys, so an open bind would be an open proxy |
 | Token counting | Passthrough with the session's current model, never routed, logged, or counted as a turn | Keeps the count on the tokenizer in use and keeps hold and lease bookkeeping honest |
 | Hook signals | Consumed only when a decision takes effect | A failed request should not eat the evidence that made it fail |
+| Cancellation | Client disconnect aborts the upstream call under Node; not detectable under Bun's node:http today | Verified by probing both runtimes; the Node path is covered by a smoke script in the check |
 | Same-session concurrency | Last writer wins in the in-memory store | Rare in practice (retries, duplicate sends); documented rather than serialized, since a stream can take minutes |
 
 ## 14. Open questions and risks

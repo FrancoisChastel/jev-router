@@ -434,7 +434,9 @@ describe("native hook ingest", () => {
 });
 
 describe("client cancellation", () => {
-  test("aborting the client mid-stream aborts the upstream and logs the interruption once", async () => {
+  // Bun's node:http emits no event when a client aborts mid-stream, so this only holds under Node.
+  // scripts/cancel-smoke.mjs runs the same scenario under Node as part of `bun run check`.
+  test.skipIf(typeof Bun !== "undefined")("aborting the client mid-stream aborts the upstream and logs the interruption once", async () => {
     reset();
     upstreamMode = "slow";
     const ctrl = new AbortController();

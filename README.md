@@ -68,7 +68,7 @@ Responses carry `x-jev-router-model`, `x-jev-router-candidate`, `x-jev-router-ef
 
 Two more endpoints serve plugins: `POST /decide` returns a decision for a request a plugin describes itself, and `POST /observe` accepts hook events such as `{ "session": "cc:<id>", "event": "compaction" }` or `{ "event": "tool_result", "tool": { "name": "Bash", "isError": true, "text": "..." } }` so harness hooks can feed higher-fidelity signals than body parsing recovers.
 
-The relay binds to localhost by default. Binding anywhere else requires `--token` (or `JEV_ROUTER_TOKEN`), which every request must then present as a bearer token or `x-api-key`, because the relay injects your real provider key.
+Run the relay with Node for production use: when a client cancels a streaming response, Node lets the relay cancel the upstream call too, while Bun's Node-compatibility layer currently emits no disconnect signal, so under Bun a cancelled generation runs to completion upstream. The relay binds to localhost by default. Binding anywhere else requires `--token` (or `JEV_ROUTER_TOKEN`), which every request must then present as a bearer token or `x-api-key`, because the relay injects your real provider key.
 
 ## Measure before believing
 

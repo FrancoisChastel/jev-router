@@ -156,10 +156,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     }
 
     if (method === "POST") {
-      // Wired before the body is drained: a close listener added afterwards never fires on an ended request.
-      // Bun's node:http emits close on the request only; Node emits it on both. Listen on the request.
+      // Client-disconnect detection. Node emits close on the response when the client goes away mid-stream,
+      // with the response unfinished. The request's own close event is not usable: it fires when the body ends.
+      // Bun's node:http currently emits nothing on a mid-stream abort, so cancellation does not propagate there.
       const clientGone = new AbortController();
-      req.on("close", () => {
+      res.on("close", () => {
         if (!res.writableFinished) clientGone.abort();
       });
       let raw: string;
