@@ -1,0 +1,45 @@
+{
+  "name": "jev-router",
+  "version": "0.0.0",
+  "description": "Harness-agnostic LLM router for agentic coding: Switchyard-style execution signals, jev as the judge, honest measurement.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    "./core": "./dist/core/index.js",
+    "./judge": "./dist/judge/index.js",
+    "./daemon": "./dist/daemon/index.js",
+    "./adapters/pi": "./dist/adapters/pi/index.js",
+    "./adapters/opencode": "./dist/adapters/opencode/index.js",
+    "./cli": "./dist/cli/index.js"
+  },
+  "bin": {
+    "jev-router": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "bun build ./src/**/index.ts --outdir dist --target node --splitting",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "biome check ."
+  },
+  "pi": {
+    "extensions": [
+      "./dist/adapters/pi/index.js"
+    ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "@earendil-works/pi-ai": "^0.87.1",
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@opencode-ai/plugin": "^1.18.32",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}

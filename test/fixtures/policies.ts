@@ -1,0 +1,31 @@
+import type { PolicyInput } from "../../src/core/policy/types";
+
+export function minimalPolicy(): PolicyInput {
+  return {
+    version: 1,
+    judge: { transport: "mock", timeout_ms: 1500, on_error: "fail_open", mode: "signals" },
+    candidates: {
+      fast: { model: "openai/gpt-5.4-mini", price: { in: 0.15, out: 0.6 } },
+      mid: { model: "anthropic/claude-sonnet-5", price: { in: 3, out: 15 }, effort: ["low", "medium", "high"] },
+      frontier: { model: "openai/gpt-6-astra", price: { in: 10, out: 40 }, effort: ["medium", "high", "xhigh"] },
+    },
+    routes: [{ id: "auto", harness: "any", policy: "default" }],
+    policies: {
+      default: {
+        default: "fast",
+        min_confidence: 0.6,
+        hold_turns: 2,
+        confidence_threshold: 0.5,
+        rules: [
+          { when: "request_class in [auxiliary, compaction]", then: { pin: "fast" } },
+          { when: "difficulty >= 2 or needs_reasoning > 0.8", then: { at_least: "mid" } },
+          { when: "stakes >= 2 and difficulty >= 3", then: { at_least: "frontier", effort: "high" } },
+          { when: "tools_failed > 0.7 or spinning > 0.7", then: { up: 1 } },
+          { when: "context_compacted", then: { up: 1, hold_turns: 2 } },
+          { when: "producing > 0.8 and tools_failed < 0.2", then: { allow_down: true } },
+        ],
+        switch: { cache_penalty: true, prefer_effort_over_model: false },
+      },
+    },
+  };
+}
