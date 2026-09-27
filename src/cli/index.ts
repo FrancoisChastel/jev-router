@@ -33,28 +33,44 @@ function flag(args: readonly string[], name: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+export interface UpOptions {
+  readonly host: string;
+  readonly port: number;
+  readonly shadow?: string;
+  readonly token?: string;
+}
+
+/** Parse `up` flags. Exported for tests; the token falls back to $JEV_ROUTER_TOKEN. */
+export function parseUpOptions(args: readonly string[], env: Readonly<Record<string, string | undefined>>): UpOptions {
+  const port = Number(flag(args, "--port") ?? 4141);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`invalid --port ${flag(args, "--port")}`);
+  const shadow = flag(args, "--shadow");
+  const token = flag(args, "--token") ?? env.JEV_ROUTER_TOKEN;
+  return { host: flag(args, "--host") ?? "127.0.0.1", port, ...(shadow ? { shadow } : {}), ...(token ? { token } : {}) };
+}
+
 async function up(args: readonly string[]): Promise<void> {
   const policyPath = await resolvePolicyPath();
   const policy = await readPolicyFile(policyPath);
   const judge = createJudge(policy.judge);
   const logger = new JsonlLogger(decisionsLogPath());
-  const host = flag(args, "--host") ?? "127.0.0.1";
-  const port = Number(flag(args, "--port") ?? 4141);
-  const shadow = flag(args, "--shadow");
+  const o = parseUpOptions(args, process.env);
   const daemon = await startDaemon({
     policy,
     ...(judge ? { judge } : {}),
     log: (r) => logger.write(r),
-    host,
-    port,
-    ...(shadow ? { shadow } : {}),
+    host: o.host,
+    port: o.port,
+    ...(o.shadow ? { shadow: o.shadow } : {}),
+    ...(o.token ? { token: o.token } : {}),
   });
-  if (shadow) console.error(`  shadow  serving '${shadow}' for every routed request; decisions are logged only`);
   console.error(`jev-router listening on ${daemon.url}`);
   console.error(`  policy  ${policyPath}`);
   console.error(`  judge   ${policy.judge.transport}${judge ? "" : " (none: deterministic only)"}`);
   console.error(`  routes  ${policy.routes.map((r) => r.id).join(", ") || "(none)"}`);
   console.error(`  log     ${decisionsLogPath()}`);
+  if (o.shadow) console.error(`  shadow  serving '${o.shadow}' for every routed request; decisions are logged only`);
+  if (o.token) console.error("  auth    bearer token required on every endpoint except /healthz");
   const shutdown = async () => {
     await daemon.close();
     await logger.flush();
@@ -173,7 +189,17 @@ async function main(argv: readonly string[]): Promise<void> {
   if (command && command !== "help") process.exitCode = 1;
 }
 
-main(process.argv.slice(2)).catch((e: unknown) => {
-  console.error(`jev-router: ${e instanceof Error ? e.message : String(e)}`);
-  process.exit(1);
-});
+const isMain = (() => {
+  try {
+    return process.argv[1] !== undefined && new URL(import.meta.url).pathname === new URL(`file://${process.argv[1]}`).pathname;
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
+  main(process.argv.slice(2)).catch((e: unknown) => {
+    console.error(`jev-router: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  });
+}
