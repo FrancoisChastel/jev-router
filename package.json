@@ -13,21 +13,30 @@
     "LICENSE"
   ],
   "exports": {
-    "./core": "./dist/core/index.js",
-    "./judge": "./dist/judge/index.js",
-    "./daemon": "./dist/daemon/index.js",
-    "./adapters/pi": "./dist/adapters/pi/index.js",
-    "./adapters/opencode": "./dist/adapters/opencode/index.js",
-    "./cli": "./dist/cli/index.js"
-  },
-  "bin": {
-    "jev-router": "./dist/cli/index.js"
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./judge": {
+      "types": "./dist/judge/index.d.ts",
+      "default": "./dist/judge/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "default": "./dist/runtime/index.js"
+    },
+    "./adapters/pi": {
+      "types": "./dist/adapters/pi/index.d.ts",
+      "default": "./dist/adapters/pi/index.js"
+    }
   },
   "scripts": {
-    "build": "bun build ./src/**/index.ts --outdir dist --target node --splitting",
+    "build": "rm -rf dist && bun build src/core/index.ts src/judge/index.ts src/runtime/index.ts src/adapters/pi/index.ts --outdir dist --target node --splitting --external '@earendil-works/*' && tsc --emitDeclarationOnly --declaration --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "lint": "biome check ."
+    "lint": "biome check .",
+    "check": "bun run typecheck && bun run lint && bun test",
+    "prepublishOnly": "bun run check && bun run build"
   },
   "pi": {
     "extensions": [
@@ -41,5 +50,25 @@
     "@opencode-ai/plugin": "^1.18.32",
     "@types/bun": "^1.4.2",
     "typescript": "^7.0.2"
-  }
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.87.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "llm",
+    "router",
+    "jev",
+    "typesafe",
+    "switchyard",
+    "pi-package",
+    "claude-code",
+    "codex",
+    "opencode",
+    "openrouter"
+  ]
 }

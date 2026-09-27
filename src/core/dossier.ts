@@ -5,6 +5,7 @@ export const DOSSIER_LIMITS = {
   taskChars: 2000,
   intentChars: 400,
   maxTools: 40,
+  toolNameChars: 64,
   maxToolEntries: 8,
   excerptChars: 200,
   totalChars: 12_000,
@@ -45,14 +46,18 @@ export function buildDossier(req: NormalizedRequest, opts: DossierOptions = {}):
     harness: req.harness,
     task: redact(head(req.lastUserText ?? "", DOSSIER_LIMITS.taskChars)),
     ...(intent ? { intent } : {}),
-    tools: req.toolNames.slice(0, DOSSIER_LIMITS.maxTools).map(redact),
+    tools: req.toolNames.slice(0, DOSSIER_LIMITS.maxTools).map((n) => redact(head(n, DOSSIER_LIMITS.toolNameChars))),
     recent_tools: recent,
     images: req.hasImages,
   };
-  // Degrade gracefully toward the total cap: drop tool entries first, then trim the task.
+  // Degrade toward the total cap: tool entries, then the tool list, then the intent, then the task.
   while (JSON.stringify(dossier).length > DOSSIER_LIMITS.totalChars) {
     if (dossier.recent_tools.length > 0) dossier = { ...dossier, recent_tools: dossier.recent_tools.slice(0, -1) };
-    else if (dossier.task.length > 100) dossier = { ...dossier, task: head(dossier.task, Math.floor(dossier.task.length / 2)) };
+    else if (dossier.tools.length > 0) dossier = { ...dossier, tools: [] };
+    else if (dossier.intent !== undefined) {
+      const { intent: _dropped, ...rest } = dossier;
+      dossier = rest;
+    } else if (dossier.task.length > 100) dossier = { ...dossier, task: head(dossier.task, Math.floor(dossier.task.length / 2)) };
     else break;
   }
   return dossier;

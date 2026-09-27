@@ -53,11 +53,16 @@ function tokenize(src: string): Token[] {
       i = j;
       continue;
     }
-    if (/[0-9]/.test(ch)) {
+    const prev = out[out.length - 1];
+    const unaryMinus =
+      ch === "-" &&
+      /[0-9]/.test(src[i + 1] ?? "") &&
+      (!prev || prev.kind === "op" || prev.kind === "kw" || (prev.kind === "punct" && prev.value !== ")" && prev.value !== "]"));
+    if (/[0-9]/.test(ch) || unaryMinus) {
       let j = i + 1;
       while (j < src.length && /[0-9.]/.test(src[j] as string)) j += 1;
       const num = src.slice(i, j);
-      if (!/^\d+(\.\d+)?$/.test(num)) throw new ExprError(`bad number '${num}'`, i);
+      if (!/^-?\d+(\.\d+)?$/.test(num)) throw new ExprError(`bad number '${num}'`, i);
       out.push({ kind: "num", value: num, pos: i });
       i = j;
       continue;
@@ -197,14 +202,17 @@ class Parser {
   }
 }
 
+/** Three-valued result: `undefined` means "unknown" because an identifier was missing. */
+type Tri = boolean | undefined;
+
 function nodeValue(node: Node, ctx: ExprContext): ExprValue {
   if (node.t === "lit") return node.v;
   if (node.t === "ident") return ctx[node.name];
   return truthy(node, ctx);
 }
 
-function compare(op: string, a: ExprValue, b: ExprValue): boolean {
-  if (a === undefined || b === undefined) return false;
+function compare(op: string, a: ExprValue, b: ExprValue): Tri {
+  if (a === undefined || b === undefined) return undefined;
   if (typeof a === "number" && typeof b === "number") {
     switch (op) {
       case ">=":
@@ -227,24 +235,42 @@ function compare(op: string, a: ExprValue, b: ExprValue): boolean {
   return false;
 }
 
-function truthy(node: Node, ctx: ExprContext): boolean {
+/**
+ * Unknown identifiers make a sub-expression unknown, and unknown never becomes true:
+ * `not unknown` stays unknown, `unknown and x` is false only when x is false, `unknown or x` is true only when x is true.
+ */
+function truthy(node: Node, ctx: ExprContext): Tri {
   switch (node.t) {
-    case "or":
-      return truthy(node.l, ctx) || truthy(node.r, ctx);
-    case "and":
-      return truthy(node.l, ctx) && truthy(node.r, ctx);
-    case "not":
-      return !truthy(node.e, ctx);
+    case "or": {
+      const l = truthy(node.l, ctx);
+      if (l === true) return true;
+      const r = truthy(node.r, ctx);
+      if (r === true) return true;
+      return l === undefined || r === undefined ? undefined : false;
+    }
+    case "and": {
+      const l = truthy(node.l, ctx);
+      if (l === false) return false;
+      const r = truthy(node.r, ctx);
+      if (r === false) return false;
+      return l === undefined || r === undefined ? undefined : true;
+    }
+    case "not": {
+      const e = truthy(node.e, ctx);
+      return e === undefined ? undefined : !e;
+    }
     case "cmp":
       return compare(node.op, nodeValue(node.l, ctx), nodeValue(node.r, ctx));
     case "in": {
       const v = nodeValue(node.l, ctx);
-      return v !== undefined && node.items.some((it) => it.v === v);
+      return v === undefined ? undefined : node.items.some((it) => it.v === v);
     }
     case "lit":
       return node.v === true;
-    case "ident":
-      return ctx[node.name] === true;
+    case "ident": {
+      const v = ctx[node.name];
+      return v === undefined ? undefined : v === true;
+    }
   }
 }
 
@@ -253,7 +279,7 @@ export function compileExpr(source: string): CompiledExpr {
   const parser = new Parser(tokenize(source));
   const ast = parser.parse();
   const identifiers: ReadonlySet<string> = new Set(parser.identifiers);
-  return { source, identifiers, evaluate: (ctx) => truthy(ast, ctx) };
+  return { source, identifiers, evaluate: (ctx) => truthy(ast, ctx) === true };
 }
 
 export function evaluateExpr(source: string, ctx: ExprContext): boolean {

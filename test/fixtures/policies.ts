@@ -21,7 +21,6 @@ export function minimalPolicy(): PolicyInput {
           { when: "difficulty >= 2 or needs_reasoning > 0.8", then: { at_least: "mid" } },
           { when: "stakes >= 2 and difficulty >= 3", then: { at_least: "frontier", effort: "high" } },
           { when: "tools_failed > 0.7 or spinning > 0.7", then: { up: 1 } },
-          { when: "context_compacted", then: { up: 1, hold_turns: 2 } },
           { when: "producing > 0.8 and tools_failed < 0.2", then: { allow_down: true } },
         ],
         switch: { cache_penalty: true, prefer_effort_over_model: false },

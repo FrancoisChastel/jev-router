@@ -70,7 +70,11 @@ describe("http judge", () => {
     let body: Record<string, unknown> = {};
     const fetchImpl: typeof fetch = async (_url, init) => {
       body = JSON.parse(String(init?.body));
-      return Response.json({ model: "jev-1.13.0", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } });
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: { difficulty: { type: "score", score: 1, probabilities: { "0": 1 }, confidence: 1 }, urgent: { type: "noul", noul: 0.1 } },
+        usage: { input_tokens: 1, output_tokens: 0 },
+      });
     };
     await new HttpJudge({ transport: "typesafe", apiKey: "k", fetch: fetchImpl }).evaluate(request);
     expect("session_id" in body).toBe(false);
@@ -82,7 +86,11 @@ describe("http judge", () => {
     const fetchImpl: typeof fetch = async () => {
       n += 1;
       if (n === 1) return new Response("slow down", { status: 429 });
-      return Response.json({ model: "m", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } });
+      return Response.json({
+        model: "jev-1.13.0",
+        answers: { difficulty: { type: "score", score: 1, probabilities: { "0": 1 }, confidence: 1 }, urgent: { type: "noul", noul: 0.1 } },
+        usage: { input_tokens: 1, output_tokens: 0 },
+      });
     };
     const judge = new HttpJudge({ transport: "typesafe", apiKey: "k", fetch: fetchImpl, retryDelayMs: 1 });
     await judge.evaluate(request);
@@ -99,6 +107,55 @@ describe("http judge", () => {
     await expect(judge.evaluate(request)).rejects.toBeInstanceOf(JudgeError);
     await expect(judge.evaluate(request)).rejects.toMatchObject({ status: 401, retryable: false });
     expect(n).toBe(2);
+  });
+
+  test("an already-aborted signal is rejected before any fetch", async () => {
+    let n = 0;
+    const fetchImpl: typeof fetch = async () => {
+      n += 1;
+      return Response.json({ model: "m", answers: {}, usage: {} });
+    };
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const judge = new HttpJudge({ transport: "typesafe", apiKey: "k", fetch: fetchImpl });
+    await expect(judge.evaluate(request, { signal: ctrl.signal })).rejects.toMatchObject({ code: "cancelled", retryable: false });
+    expect(n).toBe(0);
+  });
+
+  test("an abort during retry backoff prevents the next attempt", async () => {
+    let n = 0;
+    const ctrl = new AbortController();
+    const fetchImpl: typeof fetch = async () => {
+      n += 1;
+      ctrl.abort();
+      return new Response("busy", { status: 429 });
+    };
+    const judge = new HttpJudge({ transport: "typesafe", apiKey: "k", fetch: fetchImpl, retryDelayMs: 5 });
+    await expect(judge.evaluate(request, { signal: ctrl.signal })).rejects.toMatchObject({ code: "cancelled" });
+    expect(n).toBe(1);
+  });
+
+  test("malformed or incomplete answers are rejected as invalid responses", async () => {
+    const good = {
+      difficulty: { type: "score", score: 1.2, probabilities: { "0": 0.1, "1": 0.9 }, confidence: 0.8 },
+      urgent: { type: "noul", noul: 0.4 },
+    };
+    const bad: Record<string, unknown>[] = [
+      { difficulty: { type: "score", score: 1.2 }, urgent: good.urgent },
+      { difficulty: { ...good.difficulty, score: "high" }, urgent: good.urgent },
+      { difficulty: { ...good.difficulty, confidence: 1.7 }, urgent: good.urgent },
+      { urgent: good.urgent },
+      { difficulty: good.difficulty, urgent: { type: "noul", noul: 2 } },
+      { difficulty: { type: "noul", noul: 0.5 }, urgent: good.urgent },
+    ];
+    for (const answers of bad) {
+      const fetchImpl: typeof fetch = async () => Response.json({ model: "m", answers, usage: { input_tokens: 1, output_tokens: 0 } });
+      const judge = new HttpJudge({ transport: "typesafe", apiKey: "k", fetch: fetchImpl });
+      await expect(judge.evaluate(request)).rejects.toMatchObject({ code: "invalid_response", retryable: false });
+    }
+    const okFetch: typeof fetch = async () => Response.json({ model: "m", answers: good, usage: { input_tokens: 1, output_tokens: 0 } });
+    const res = await new HttpJudge({ transport: "typesafe", apiKey: "k", fetch: okFetch }).evaluate(request);
+    expect(res.answers.difficulty?.type).toBe("score");
   });
 
   test("times out and reports a retryable error", async () => {

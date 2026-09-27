@@ -1,4 +1,4 @@
-import type { Answer, EvaluateOptions, Judge, JudgeRequest, JudgeResult, JudgeUsage } from "./types";
+import type { Answer, EvaluateOptions, Judge, JudgeRequest, JudgeResult, JudgeUsage, Question } from "./types";
 
 export type Transport = "typesafe" | "vercel" | "openrouter";
 
@@ -45,8 +45,6 @@ export interface HttpJudgeOptions {
   readonly extraHeaders?: Readonly<Record<string, string>>;
 }
 
-const ANSWER_TYPES: ReadonlySet<string> = new Set(["choice", "score", "noul"]);
-
 function isAbortError(e: unknown): boolean {
   return typeof e === "object" && e !== null && "name" in e && (e as { name: unknown }).name === "AbortError";
 }
@@ -65,15 +63,42 @@ function normalizeUsage(raw: unknown, meta: unknown): JudgeUsage {
   return { inputTokens, outputTokens, ...(cost !== undefined ? { costUsd: cost } : {}) };
 }
 
-function parseAnswers(raw: unknown): Readonly<Record<string, Answer>> {
+const isUnit = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
+const isProbabilities = (v: unknown): boolean =>
+  typeof v === "object" && v !== null && !Array.isArray(v) && Object.values(v as Record<string, unknown>).every(isUnit);
+
+function validateAnswer(id: string, question: Question, raw: unknown): Answer {
+  const bad = (why: string): never => {
+    throw new JudgeError(`answer '${id}' ${why}`, "invalid_response", false);
+  };
+  if (typeof raw !== "object" || raw === null) return bad("is not an object");
+  const a = raw as Record<string, unknown>;
+  if (a.type !== question.type) return bad(`has type '${String(a.type)}', expected '${question.type}'`);
+  if (question.type === "noul") {
+    if (!isUnit(a.noul)) return bad("needs a noul probability in [0, 1]");
+    return { type: "noul", noul: a.noul };
+  }
+  if (!isUnit(a.confidence)) return bad("needs a confidence in [0, 1]");
+  if (!isProbabilities(a.probabilities)) return bad("needs a probabilities map of numbers in [0, 1]");
+  const probabilities = a.probabilities as Record<string, number>;
+  if (question.type === "score") {
+    if (typeof a.score !== "number" || !Number.isFinite(a.score)) return bad("needs a finite score");
+    const legend = typeof a.legend === "object" && a.legend !== null ? (a.legend as Record<string, string>) : undefined;
+    return { type: "score", score: a.score, probabilities, confidence: a.confidence, ...(legend ? { legend } : {}) };
+  }
+  if (typeof a.choice !== "string") return bad("needs a choice string");
+  return { type: "choice", choice: a.choice, probabilities, confidence: a.confidence };
+}
+
+/** Keep only the answers that were asked for, each validated against its question's type. */
+function parseAnswers(raw: unknown, questions: Readonly<Record<string, Question>>): Readonly<Record<string, Answer>> {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     throw new JudgeError("response has no answers object", "invalid_response", false);
+  const answers = raw as Record<string, unknown>;
   const out: Record<string, Answer> = {};
-  for (const [id, a] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof a !== "object" || a === null || !ANSWER_TYPES.has(String((a as { type?: unknown }).type))) {
-      throw new JudgeError(`answer '${id}' has an unknown shape`, "invalid_response", false);
-    }
-    out[id] = a as Answer;
+  for (const [id, question] of Object.entries(questions)) {
+    if (!(id in answers)) throw new JudgeError(`answer '${id}' is missing`, "invalid_response", false);
+    out[id] = validateAnswer(id, question, answers[id]);
   }
   return out;
 }
@@ -112,14 +137,17 @@ export class HttpJudge implements Judge {
       ...this.opts.extraHeaders,
     };
 
+    const cancelled = () => new JudgeError("cancelled by caller", "cancelled", false);
     let lastError: JudgeError = new JudgeError("no attempt made", "network", false);
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      if (evalOpts.signal?.aborted) throw cancelled();
       const started = performance.now();
-      const result = await this.attempt(body, headers, evalOpts.signal);
+      const result = await this.attempt(body, headers, request.questions, evalOpts.signal);
       if (result.ok) return { ...result.value, latencyMs: performance.now() - started };
       lastError = result.error;
       if (!lastError.retryable || attempt === this.maxRetries) break;
       await sleep(this.retryDelayMs * 2 ** attempt * (0.5 + Math.random()));
+      if (evalOpts.signal?.aborted) throw cancelled();
     }
     throw lastError;
   }
@@ -127,8 +155,10 @@ export class HttpJudge implements Judge {
   private async attempt(
     body: string,
     headers: Record<string, string>,
+    questions: Readonly<Record<string, Question>>,
     outer: AbortSignal | undefined,
   ): Promise<{ ok: true; value: Omit<JudgeResult, "latencyMs"> } | { ok: false; error: JudgeError }> {
+    if (outer?.aborted) return { ok: false, error: new JudgeError("cancelled by caller", "cancelled", false) };
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     const onOuterAbort = () => ctrl.abort();
@@ -158,7 +188,7 @@ export class HttpJudge implements Judge {
       }
       const obj = (typeof json === "object" && json !== null ? json : {}) as Record<string, unknown>;
       try {
-        const answers = parseAnswers(obj.answers);
+        const answers = parseAnswers(obj.answers, questions);
         const usage = normalizeUsage(obj.usage, obj.provider_metadata);
         const model = typeof obj.model === "string" ? obj.model : this.model;
         return { ok: true, value: { model, answers, usage } };

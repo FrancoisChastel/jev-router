@@ -105,7 +105,7 @@ Local service, started on demand by adapters or the CLI.
 
 | Harness | Actuator | Sensors | Install |
 |---|---|---|---|
-| Pi | In-process. `ctx.modelRegistry.find(provider, id)` then `pi.setModel(model)`, `pi.setThinkingLevel(level)`. Optional virtual `auto` model via `pi.registerProvider` | `before_agent_start`, `turn_end` (tool results), `tool_execution_end` (`isError`), `session_compact` (reason), `model_select`, `before_provider_headers` | `pi install npm:jev-router` (package exposes the extension via the `pi` key) |
+| Pi | In-process. `ctx.modelRegistry.find(provider, id)` then `pi.setModel(model)`, `pi.setThinkingLevel(level)`. A manual `/model` pick pauses routing until `/jev-router on`. Optional virtual `auto` model via `pi.registerProvider` is deferred | `before_agent_start`, `turn_end` (tool results), `tool_execution_end` (`isError`), `session_compact` (reason), `model_select`, `before_provider_headers` | `pi install npm:jev-router` (package exposes the extension via the `pi` key) |
 | Claude Code | Relay via `ANTHROPIC_BASE_URL`, written by the installer or the user | Plugin hooks (command or http) for `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `PostCompact`, `SubagentStart`, `Stop`, `StopFailure`, `UserPromptSubmit`. Payloads carry `session_id`, `prompt_id`, `agent_id`, `effort.level`. Plus opt-in gateway hint headers | Marketplace plugin with hooks, a status skill, `userConfig` for keys |
 | Codex | Relay configured as `model_providers.jev-router` with `wire_api = "responses"` (the only supported value) | Hooks: `PreToolUse`, `PostToolUse`, `PreCompact`, `PostCompact`, `UserPromptSubmit`, `Stop`, `SessionStart` | Plugin with hooks and skill; installer writes `config.toml` |
 | OpenCode | Effort in-process via `chat.params` output `options`; model via relay configured as a provider in `opencode.json` | `tool.execute.after`, `event` (`session.compacted`, `session.error`), `chat.headers` injects session id | `plugin: ["jev-router/adapters/opencode"]` in `opencode.json` |
@@ -158,6 +158,8 @@ Option-pick mode (per route, opt-in): one `choice` over candidate ids with user-
 
 ## 7. Policy schema v1
 
+The on-disk format is JSON at `~/.jev-router/policy.json`; YAML is accepted under Bun or when the optional `yaml` package is installed. The sketch below is YAML for readability. `examples/policy.json` is the reference file.
+
 ```yaml
 version: 1
 
@@ -203,7 +205,7 @@ policies:
       prefer_effort_over_model: true    # Codex
 ```
 
-Rule expressions are a tiny, whitelisted grammar: identifiers, numeric comparisons, `in`, `and`, `or`. No code execution.
+Rule expressions are a tiny, whitelisted grammar: identifiers, numeric comparisons, `in`, `and`, `or`, `not`. No code execution. Identifiers are checked at load time against the deterministic context keys and the judge question ids, so a typo fails the policy load instead of silently never matching. A missing identifier makes its sub-expression unknown, and unknown never fires a rule, even under `not`. Compaction is a built-in override, not a rule input. `confidence_threshold` must be at least tanh(0.5), about 0.462, so a single tool-signal axis can never decide alone. `judge.on_error: fail_closed` sends an unjudged turn to the most capable candidate; `fail_open` keeps the current tier.
 
 ## 8. Wire-format handling in the relay
 

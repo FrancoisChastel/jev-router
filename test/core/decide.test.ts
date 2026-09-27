@@ -231,6 +231,52 @@ describe("conclude: judge-driven paths", () => {
     expect(decision.source).toBe("fallback");
   });
 
+  test("an empty answer set counts as no judge", () => {
+    const { decision } = judged(req(), emptySession(), {});
+    expect(decision.source).toBe("fallback");
+    expect(decision.reasons).toContain("judge_empty");
+  });
+
+  test("a non-finite confidence fails closed to the current tier", () => {
+    const { decision } = judged(req(), emptySession(), {
+      difficulty: { type: "score", score: 3.4, probabilities: {}, confidence: Number.NaN },
+      needs_reasoning: noul(0.9),
+      stakes: score(2.5),
+      output_kind: choice("code_edit"),
+      long_context: noul(0.2),
+    });
+    expect(decision.candidate).toBe("fast");
+    expect(decision.reasons).toContain("low_confidence");
+  });
+
+  test("fail_closed routes an unjudged turn to the most capable candidate", () => {
+    const raw = minimalPolicy();
+    raw.judge.on_error = "fail_closed";
+    const { decision } = judged(req(), emptySession(), null, loadPolicy(raw));
+    expect(decision.candidate).toBe("frontier");
+    expect(decision.source).toBe("fallback");
+    expect(decision.reasons).toEqual(expect.arrayContaining(["judge_unavailable", "fail_closed"]));
+  });
+
+  test("counterfactuals cover every candidate, including filtered ones", () => {
+    const raw = minimalPolicy();
+    raw.candidates.fast.capabilities = { vision: false };
+    const { decision } = judged(
+      req({ hasImages: true }),
+      emptySession(),
+      {
+        difficulty: score(1),
+        needs_reasoning: noul(0.1),
+        stakes: score(1),
+        output_kind: choice("short_answer"),
+        long_context: noul(0.1),
+      },
+      loadPolicy(raw),
+    );
+    expect(decision.candidate).toBe("mid");
+    expect(Object.keys(decision.counterfactuals).sort()).toEqual(["fast", "frontier", "mid"]);
+  });
+
   test("requested effort is clamped to what the candidate supports", () => {
     const { decision } = judged(req({ requestedEffort: "xhigh" }), emptySession(), {
       difficulty: score(2.6),

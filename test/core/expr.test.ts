@@ -25,6 +25,14 @@ describe("rule expressions", () => {
   test("unknown identifiers compare as false, never throw", () => {
     expect(evaluateExpr("missing > 1", {})).toBe(false);
     expect(evaluateExpr("missing > 1 or present", { present: true })).toBe(true);
+    expect(evaluateExpr("not missing", {})).toBe(false);
+    expect(evaluateExpr("not (missing > 1)", {})).toBe(false);
+    expect(evaluateExpr("missing > 1 and present", { present: true })).toBe(false);
+  });
+
+  test("negative literals parse", () => {
+    expect(evaluateExpr("difficulty >= -1", { difficulty: 0 })).toBe(true);
+    expect(evaluateExpr("delta < -0.5", { delta: -0.7 })).toBe(true);
   });
 
   test("rejects anything outside the whitelist at compile time", () => {

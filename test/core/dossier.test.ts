@@ -33,6 +33,12 @@ describe("dossier", () => {
     expect(JSON.stringify(d).length).toBeLessThanOrEqual(DOSSIER_LIMITS.totalChars);
   });
 
+  test("oversized tool name lists are cut down to the total cap", () => {
+    const names = Array.from({ length: 40 }, (_, i) => `mcp__${"n".repeat(2000)}__${i}`);
+    const d = buildDossier(req({ toolNames: names }));
+    expect(JSON.stringify(d).length).toBeLessThanOrEqual(DOSSIER_LIMITS.totalChars);
+  });
+
   test("errors come first and excerpts are tails", () => {
     const d = buildDossier(
       req({

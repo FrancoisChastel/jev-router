@@ -1,3 +1,4 @@
+export { DETERMINISTIC_KEYS, knownIdentifiers } from "./context-keys";
 export { counterfactualCosts, estimateCostUsd } from "./cost";
 export type { Concluded, PlanInput, PlanOutcome } from "./decide";
 export { plan } from "./decide";
@@ -5,10 +6,12 @@ export type { Dossier, DossierOptions, DossierTool } from "./dossier";
 export { buildDossier, DOSSIER_LIMITS } from "./dossier";
 export * from "./policy";
 export { executionPhaseQuestions, optionPickQuestion, taskPhaseQuestions } from "./questions";
+export type { ApplyOutcome, DecisionRecord, JudgeTrace, RecordInput } from "./record";
+export { buildDecisionRecord } from "./record";
 export type { AdvanceOptions, SessionKey } from "./session";
 export { advanceSession, emptySession, resolveSessionKey } from "./session";
 export type { StageDimensions, StageOptions, StageScore } from "./signals/stage";
-export { scoreStage } from "./signals/stage";
+export { SINGLE_AXIS_CONFIDENCE, scoreStage } from "./signals/stage";
 export type { ToolSemantics } from "./signals/tool-semantics";
 export { classifyTool } from "./signals/tool-semantics";
 export * from "./types";

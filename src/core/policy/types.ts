@@ -17,6 +17,8 @@ export interface JudgeConfigInput {
 export interface EgressInput {
   readonly base_url: string;
   readonly api_key_env?: string;
+  /** Pi provider name that serves this egress, when it differs from the egress key. */
+  readonly pi_provider?: string;
 }
 
 export interface CandidateCapabilities {
@@ -36,6 +38,8 @@ export interface CandidateInput {
   readonly capabilities?: CandidateCapabilities;
   /** Free-text description used only in option_pick mode. */
   readonly description?: string;
+  /** Per-adapter overrides for how this candidate is addressed inside Pi. */
+  readonly pi?: { readonly provider?: string; readonly model?: string };
 }
 
 export interface RuleAction {

@@ -35,6 +35,36 @@ describe("policy loading", () => {
     expect(() => loadPolicy(raw)).toThrow(/min_confidence/);
   });
 
+  test("rejects malformed capabilities, routes, and egress entries", () => {
+    const caps = minimalPolicy();
+    (caps.candidates.fast as { capabilities?: unknown }).capabilities = { context: "128k" };
+    expect(() => loadPolicy(caps)).toThrow(/capabilities/);
+
+    const route = minimalPolicy();
+    (route.routes[0] as { harness: string }).harness = "clod-code";
+    expect(() => loadPolicy(route)).toThrow(/harness/);
+
+    const egress = minimalPolicy();
+    (egress as { egress?: unknown }).egress = { openrouter: { api_key_env: "X" } };
+    expect(() => loadPolicy(egress)).toThrow(/egress/);
+  });
+
+  test("rejects rules that reference unknown identifiers", () => {
+    const typo = minimalPolicy();
+    typo.policies.default.rules.push({ when: "dificulty >= 2", then: { up: 1 } });
+    expect(() => loadPolicy(typo)).toThrow(/dificulty/);
+
+    const compacted = minimalPolicy();
+    compacted.policies.default.rules.push({ when: "context_compacted", then: { up: 1 } });
+    expect(() => loadPolicy(compacted)).toThrow(/context_compacted/);
+  });
+
+  test("rejects a confidence_threshold below the single-axis floor", () => {
+    const raw = minimalPolicy();
+    raw.policies.default.confidence_threshold = 0.4;
+    expect(() => loadPolicy(raw)).toThrow(/confidence_threshold/);
+  });
+
   test("loading never mutates the input", () => {
     const raw = minimalPolicy();
     const snapshot = JSON.stringify(raw);

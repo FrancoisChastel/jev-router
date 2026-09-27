@@ -37,6 +37,8 @@ const CRITICAL =
 const EXPLORE_SATURATION = 6;
 const SPIN_SATURATION = 3;
 const AXIS_WEIGHT = 0.5;
+/** Confidence produced by exactly one maxed axis. A threshold below this lets a single axis decide on its own. */
+export const SINGLE_AXIS_CONFIDENCE = Math.tanh(AXIS_WEIGHT);
 
 const ABSTAIN: StageScore = {
   abstained: true,

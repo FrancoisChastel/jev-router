@@ -95,7 +95,6 @@ function baseContext(request: NormalizedRequest, stage: StageScore, failuresNow:
   const dims = stage.abstained ? undefined : stage.dimensions;
   const ctx: Record<string, ExprValue> = {
     harness: request.harness,
-    context_compacted: request.contextCompacted === true,
     has_images: request.hasImages,
     is_new_user_turn: request.isNewUserTurn,
     est_tokens: request.estimatedInputTokens,
@@ -111,24 +110,29 @@ function baseContext(request: NormalizedRequest, stage: StageScore, failuresNow:
   return ctx;
 }
 
+const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+
+/** Only well-formed values reach rules; anything else stays unknown so rules fail closed. */
 function flattenAnswers(answers: Readonly<Record<string, Answer>>): ExprContext {
   const ctx: Record<string, ExprValue> = {};
   for (const [id, a] of Object.entries(answers)) {
-    if (a.type === "noul") ctx[id] = a.noul;
-    else if (a.type === "score") {
-      ctx[id] = a.score;
-      ctx[`${id}.confidence`] = a.confidence;
+    if (a.type === "noul") {
+      if (finite(a.noul)) ctx[id] = a.noul;
+    } else if (a.type === "score") {
+      if (finite(a.score)) ctx[id] = a.score;
+      ctx[`${id}.confidence`] = finite(a.confidence) ? a.confidence : 0;
     } else {
-      ctx[id] = a.choice;
-      ctx[`${id}.confidence`] = a.confidence;
+      if (typeof a.choice === "string") ctx[id] = a.choice;
+      ctx[`${id}.confidence`] = finite(a.confidence) ? a.confidence : 0;
     }
   }
   return ctx;
 }
 
+/** Minimum confidence across choice and score answers. A missing or non-finite confidence counts as zero. */
 function minConfidence(answers: Readonly<Record<string, Answer>>): number {
   let min = 1;
-  for (const a of Object.values(answers)) if (a.type !== "noul") min = Math.min(min, a.confidence);
+  for (const a of Object.values(answers)) if (a.type !== "noul") min = Math.min(min, finite(a.confidence) ? a.confidence : 0);
   return min;
 }
 
@@ -180,7 +184,7 @@ export function plan(input: PlanInput): PlanOutcome {
       source,
       ...(o.confidence !== undefined ? { confidence: o.confidence } : {}),
       reasons: [...baseReasons, ...o.reasons, ...(clamped ? ["effort_clamped"] : [])],
-      counterfactuals: counterfactualCosts(policy.candidates, tiers.ids, request.estimatedInputTokens, def.est_output_tokens),
+      counterfactuals: counterfactualCosts(policy.candidates, def.order, request.estimatedInputTokens, def.est_output_tokens),
       lease: o.lease,
     };
     const assignment: CurrentAssignment =
@@ -275,7 +279,17 @@ export function plan(input: PlanInput): PlanOutcome {
   const conclude = (answers: Readonly<Record<string, Answer>> | null): Concluded => {
     const fallbackEffort = current?.effort ?? request.requestedEffort;
     const fallbackOpt = fallbackEffort ? { effortWanted: fallbackEffort } : {};
-    if (!answers) return finish(baseline, "fallback", { reasons: ["judge_unavailable"], lease: "tool_chain", ...fallbackOpt });
+    if (!answers || Object.keys(answers).length === 0) {
+      const why = answers ? "judge_empty" : "judge_unavailable";
+      if (policy.judge.on_error === "fail_closed") {
+        return finish(tiers.ids[tiers.ids.length - 1] as string, "fallback", {
+          reasons: [why, "fail_closed"],
+          lease: "one_call",
+          ...fallbackOpt,
+        });
+      }
+      return finish(baseline, "fallback", { reasons: [why], lease: "tool_chain", ...fallbackOpt });
+    }
 
     const full: ExprContext = { ...ctx, ...flattenAnswers(answers) };
     const confidence = minConfidence(answers);
