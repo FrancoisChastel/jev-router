@@ -82,7 +82,7 @@ jev-router up --shadow frontier        # serve one model for everything, log wha
 
 `stats` reports savings against every single-candidate baseline, including the ones the router loses to. `replay` reuses the recorded judge answers so policy iteration is free, with the caveat that it assumes the same tokens would have flowed through the other model. Shadow mode is how to trial the router on real traffic without letting it touch anything.
 
-None of this is a benchmark. The design calls for Harbor runs on Terminal-Bench with Claude Code, Codex, OpenCode, and Pi against single-model baselines, and no savings claim should be made before those exist.
+None of this is a benchmark. [docs/evaluation.md](./docs/evaluation.md) is the runbook for Harbor runs on Terminal-Bench with Claude Code, Codex, OpenCode, and Pi against single-model baselines. No savings claim should be made before those exist.
 
 ## Policy file
 

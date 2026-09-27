@@ -255,7 +255,7 @@ Decision log, one JSONL line per decision:
 - `replay`: re-run a policy over recorded judge answers offline. Free policy iteration.
 - `shadow`: pin a model, log what the router would have done.
 - `bench`: labeled fixtures to accuracy, calibration, and threshold-coverage tables.
-- Agentic eval: Harbor with Terminal-Bench-lite, adapters for Claude Code, Codex, OpenCode, Pi, pointed at the relay, versus single-model baselines. Same methodology as Switchyard's benchmark.
+- Agentic eval: Harbor with Terminal-Bench, adapters for Claude Code, Codex, OpenCode, Pi, pointed at the relay, versus single-model baselines. Same methodology as Switchyard's benchmark. Runbook: `docs/evaluation.md`.
 
 ## 11. Package layout
 
