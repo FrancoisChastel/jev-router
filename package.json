@@ -34,10 +34,18 @@
     "./daemon": {
       "types": "./dist/daemon/index.d.ts",
       "default": "./dist/daemon/index.js"
+    },
+    "./adapters/opencode": {
+      "types": "./dist/adapters/opencode/index.d.ts",
+      "default": "./dist/adapters/opencode/index.js"
+    },
+    "./measure": {
+      "types": "./dist/measure/index.d.ts",
+      "default": "./dist/measure/index.js"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && bun build src/core/index.ts src/judge/index.ts src/runtime/index.ts src/daemon/index.ts src/adapters/pi/index.ts src/cli/index.ts --outdir dist --target node --splitting --external '@earendil-works/*' && tsc --emitDeclarationOnly --declaration --outDir dist",
+    "build": "rm -rf dist && bun build src/core/index.ts src/judge/index.ts src/runtime/index.ts src/daemon/index.ts src/measure/index.ts src/adapters/pi/index.ts src/adapters/opencode/index.ts src/cli/index.ts --outdir dist --target node --splitting --external '@earendil-works/*' --external '@opencode-ai/*' && bun build src/adapters/opencode/index.ts --outfile dist/adapters/opencode/plugin.js --target node --external '@opencode-ai/*' && tsc --emitDeclarationOnly --declaration --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "biome check .",
@@ -58,10 +66,14 @@
     "typescript": "^7.0.2"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.87.0"
+    "@earendil-works/pi-coding-agent": ">=0.87.0",
+    "@opencode-ai/plugin": ">=1.0.0"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@opencode-ai/plugin": {
       "optional": true
     }
   },

@@ -23,6 +23,8 @@ export interface RelayDeps {
   readonly service: RouterService;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly fetch: typeof fetch;
+  /** Shadow mode: always serve this candidate while logging what the router would have done. */
+  readonly shadow?: string;
 }
 
 const CHARS_PER_TOKEN = 4;
@@ -97,22 +99,26 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     ...(r.headers["x-claude-code-context-compacted"] ? { contextCompacted: true } : {}),
     estimatedInputTokens: Math.ceil(r.rawBody.length / CHARS_PER_TOKEN),
   });
-  const candidate = policy.candidates[decided.decision.candidate];
+  const servedId = deps.shadow && policy.candidates[deps.shadow] ? deps.shadow : decided.decision.candidate;
+  const candidate = policy.candidates[servedId];
+  const shadow = servedId !== decided.decision.candidate || deps.shadow ? { served: servedId } : undefined;
   const target = egressFor(policy, candidate);
   if (!target) {
     decided.commit({ ok: false, error: "no egress configured" });
     sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, "no egress configured for the selected candidate"));
     return;
   }
-  const rewritten = r.dialect.rewrite(body, decided.decision);
+  const served = shadow && candidate ? { ...decided.decision, candidate: servedId, model: candidate.model } : decided.decision;
+  const rewritten = r.dialect.rewrite(body, served);
   await forward(deps, r, target, rewritten, {
-    source: decided.decision.source,
+    source: shadow ? "shadow" : decided.decision.source,
     extraHeaders: {
-      "x-jev-router-model": decided.decision.model,
-      "x-jev-router-candidate": decided.decision.candidate,
-      ...(decided.decision.effort ? { "x-jev-router-effort": decided.decision.effort } : {}),
+      "x-jev-router-model": served.model,
+      "x-jev-router-candidate": servedId,
+      "x-jev-router-decision": decided.decision.candidate,
+      ...(served.effort ? { "x-jev-router-effort": served.effort } : {}),
     },
-    onDone: (ok, usage, error) => decided.commit(ok ? { ok: true } : { ok: false, ...(error ? { error } : {}) }, usage),
+    onDone: (ok, usage, error) => decided.commit(ok ? { ok: true } : { ok: false, ...(error ? { error } : {}) }, usage, shadow),
   });
 }
 

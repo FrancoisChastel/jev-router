@@ -278,6 +278,14 @@ Exports: `jev-router/core`, `jev-router/judge`, `jev-router/daemon`, `jev-router
 
 ## 12. Build order
 
+Progress as of 2026-09-27: steps 1 to 6 below exist and are tested (core, Pi extension, relay daemon with the three dialects, Claude Code and Codex hook packs with the installer, OpenCode plugin, stats/replay/shadow). Step 7 onward is open.
+
+Deviations from the plan worth knowing:
+
+- OpenCode: reasoning effort is not set in-process after all. OpenCode reaches the relay through a provider, and the relay already rewrites `reasoning_effort` for the chat dialect, so the plugin only injects the session header and reports signals.
+- Compaction is a built-in override and is no longer an identifier rules can reference; rule identifiers are validated against a known set at load time.
+- The relay serves unknown model ids as untouched passthrough to the default egress.
+
 1. Core: types, policy loader and validator, deterministic signals, decision function, fixtures. Mock judge.
 2. Pi extension: in-process reference. Judge via OpenRouter Decisions. Proves the whole loop with no daemon.
 3. Daemon: relay for Anthropic Messages first (strictest), then OpenAI chat, then Responses. `/decide`, `/observe`, models endpoints. Decision log.

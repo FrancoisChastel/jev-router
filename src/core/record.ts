@@ -22,6 +22,13 @@ export interface DecisionRecord {
   readonly requestClass?: RequestClass;
   readonly isNewUserTurn: boolean;
   readonly estimatedInputTokens: number;
+  readonly contextCompacted?: boolean;
+  readonly hasImages?: boolean;
+  readonly requestedEffort?: string;
+  /** Tool names declared on the request, bounded. Names, never arguments. */
+  readonly toolNames?: readonly string[];
+  /** Outcomes carried by the request as name and error flag only, so a replay can rebuild the signals. */
+  readonly toolOutcomes?: readonly { readonly name: string; readonly isError: boolean }[];
   readonly signals?: StageScore["dimensions"] & { readonly score: number };
   readonly judge?: JudgeTrace;
   readonly decision: Decision;
@@ -55,6 +62,7 @@ export interface RecordInput {
   readonly judge?: JudgeTrace;
   readonly apply?: ApplyOutcome;
   readonly usage?: TokenUsage;
+  readonly shadow?: { readonly served: string };
 }
 
 export function buildDecisionRecord(input: RecordInput): DecisionRecord {
@@ -68,10 +76,18 @@ export function buildDecisionRecord(input: RecordInput): DecisionRecord {
     ...(request.requestClass ? { requestClass: request.requestClass } : {}),
     isNewUserTurn: request.isNewUserTurn,
     estimatedInputTokens: request.estimatedInputTokens,
+    ...(request.contextCompacted ? { contextCompacted: true } : {}),
+    ...(request.hasImages ? { hasImages: true } : {}),
+    ...(request.requestedEffort ? { requestedEffort: request.requestedEffort } : {}),
+    ...(request.toolNames.length > 0 ? { toolNames: request.toolNames.slice(0, 64) } : {}),
+    ...(request.toolOutcomes.length > 0
+      ? { toolOutcomes: request.toolOutcomes.slice(0, 64).map((o) => ({ name: o.name, isError: o.isError })) }
+      : {}),
     ...(stage && !stage.abstained ? { signals: { ...stage.dimensions, score: stage.raw } } : {}),
     ...(input.judge ? { judge: input.judge } : {}),
     decision: input.decision,
     ...(input.apply ? { apply: input.apply } : {}),
     ...(input.usage ? { usage: input.usage } : {}),
+    ...(input.shadow ? { shadow: input.shadow } : {}),
   };
 }

@@ -14,6 +14,8 @@ export interface SetupOptions {
   readonly dryRun: boolean;
   readonly home?: string;
   readonly examplePolicyPath?: string;
+  /** Standalone OpenCode plugin bundle to copy into OpenCode's plugin directory. */
+  readonly openCodePluginPath?: string;
   readonly log: (line: string) => void;
 }
 
@@ -82,6 +84,9 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
     } else if (agent === "opencode") {
       const path = join(home, ".config", "opencode", "opencode.json");
       await writeWithBackup(path, json(planOpenCodeConfig(await readJson(path), target)), opts);
+      const bundle = opts.openCodePluginPath ? await readText(opts.openCodePluginPath) : undefined;
+      if (bundle) await writeWithBackup(join(home, ".config", "opencode", "plugins", "jev-router.js"), bundle, opts);
+      else opts.log("  plugin bundle not found next to the CLI; sensors skipped (model routing still works through the provider)");
     } else {
       opts.log("  run: pi install npm:jev-router   (in-process extension; no relay needed)");
     }

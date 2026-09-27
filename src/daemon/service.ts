@@ -24,7 +24,7 @@ export interface Decided {
   readonly judge?: JudgeTrace;
   readonly stage: StageScore;
   /** Persist the session when the decision took effect, and log the record either way. */
-  commit(apply: ApplyOutcome, usage?: TokenUsage): DecisionRecord;
+  commit(apply: ApplyOutcome, usage?: TokenUsage, shadow?: { readonly served: string }): DecisionRecord;
 }
 
 export interface RouterServiceDeps {
@@ -100,7 +100,7 @@ export class RouterService {
       decision: concluded.decision,
       ...(trace ? { judge: trace } : {}),
       stage,
-      commit: (apply, usage) => {
+      commit: (apply, usage, shadow) => {
         if (apply.ok) store.set(input.sessionKey, concluded.session);
         const record = buildDecisionRecord({
           id: this.deps.randomId(),
@@ -112,6 +112,7 @@ export class RouterService {
           apply,
           ...(trace ? { judge: trace } : {}),
           ...(usage ? { usage } : {}),
+          ...(shadow ? { shadow } : {}),
         });
         this.deps.log(record);
         return record;

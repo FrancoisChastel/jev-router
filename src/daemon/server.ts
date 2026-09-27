@@ -22,6 +22,8 @@ export interface DaemonOptions {
   readonly now?: () => number;
   readonly randomId?: () => string;
   readonly maxBodyBytes?: number;
+  /** Serve this candidate for every routed request and only log the router's decision. */
+  readonly shadow?: string;
 }
 
 export interface RunningDaemon {
@@ -103,7 +105,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     now: opts.now ?? (() => Date.now()),
     randomId: opts.randomId ?? (() => crypto.randomUUID()),
   });
-  const relayDeps = { policy: opts.policy, service, env, fetch: opts.fetch ?? fetch };
+  if (opts.shadow && !opts.policy.candidates[opts.shadow]) throw new Error(`shadow candidate '${opts.shadow}' is not in the policy`);
+  const relayDeps = { policy: opts.policy, service, env, fetch: opts.fetch ?? fetch, ...(opts.shadow ? { shadow: opts.shadow } : {}) };
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {

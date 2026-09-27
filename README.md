@@ -2,7 +2,7 @@
 
 Harness-agnostic LLM router for agentic coding. It routes each turn to the cheapest model and reasoning effort that can finish the job, using Switchyard-style execution signals from tool results and TypeSafe's jev as a fast, calibrated judge.
 
-Status: early. The core decision engine, the judge transports, the Pi extension, the local relay, hook packs for Claude Code and Codex, and the installer exist. The OpenCode plugin and the measurement tooling (stats, replay, shadow mode, Harbor evaluation) are next. See [DESIGN.md](./DESIGN.md).
+Status: early. The core decision engine, judge transports, Pi extension, local relay, hook packs for Claude Code and Codex, OpenCode plugin, installer, and measurement tooling (stats, replay, shadow mode) exist. Not yet done: the Harbor benchmark run that would justify any savings claim, the AI SDK middleware, and expected-value switching with cache affinity. See [DESIGN.md](./DESIGN.md).
 
 ## How it decides
 
@@ -61,7 +61,7 @@ Clients pick a route by model id. `auto` is the generic route; `claude-code/auto
 |---|---|
 | Claude Code | `ANTHROPIC_BASE_URL=http://127.0.0.1:4141`, `ANTHROPIC_AUTH_TOKEN=anything`, `ANTHROPIC_API_KEY=""`, `ANTHROPIC_MODEL=claude-code/auto`. Set `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` so the relay receives request class and compaction hints. |
 | Codex | In `~/.codex/config.toml`: `model_provider = "jev"`, `model = "auto"`, and `[model_providers.jev]` with `base_url = "http://127.0.0.1:4141/v1"`, `wire_api = "responses"`, `env_key = "JEV_ROUTER_TOKEN"` (any value). |
-| OpenCode | A provider with `npm: "@ai-sdk/openai-compatible"`, `options.baseURL: "http://127.0.0.1:4141/v1"`, and a model named `auto`. |
+| OpenCode | `npx jev-router setup --agent opencode` adds a `jev-router` provider with an `auto` model and drops a plugin into `~/.config/opencode/plugins/` that tags requests with the session id and reports tool results, compaction, and API errors to the relay. |
 | Pi | Prefer the in-process extension above. To use the relay instead, add a provider with `api: openai-completions`, `baseUrl: http://127.0.0.1:4141/v1`, and a model `auto`. |
 
 Responses carry `x-jev-router-model`, `x-jev-router-candidate`, `x-jev-router-effort`, and `x-jev-router-source`, and every decision is appended to `~/.jev-router/decisions.jsonl` with the usage the upstream reported.
@@ -69,6 +69,20 @@ Responses carry `x-jev-router-model`, `x-jev-router-candidate`, `x-jev-router-ef
 Two more endpoints serve plugins: `POST /decide` returns a decision for a request a plugin describes itself, and `POST /observe` accepts hook events such as `{ "session": "cc:<id>", "event": "compaction" }` or `{ "event": "tool_result", "tool": { "name": "Bash", "isError": true, "text": "..." } }` so harness hooks can feed higher-fidelity signals than body parsing recovers.
 
 The relay binds to localhost and does not authenticate callers. Keep it there.
+
+## Measure before believing
+
+Every decision is one JSONL line: the raw judge answers, the decision and why, whether it was applied, and the tokens the upstream reported. Three commands read it.
+
+```bash
+jev-router stats                       # actual cost versus "always fast", "always mid", "always frontier"
+jev-router replay --policy new.json    # re-decide the same log under another policy, no judge calls
+jev-router up --shadow frontier        # serve one model for everything, log what the router would have done
+```
+
+`stats` reports savings against every single-candidate baseline, including the ones the router loses to. `replay` reuses the recorded judge answers so policy iteration is free, with the caveat that it assumes the same tokens would have flowed through the other model. Shadow mode is how to trial the router on real traffic without letting it touch anything.
+
+None of this is a benchmark. The design calls for Harbor runs on Terminal-Bench with Claude Code, Codex, OpenCode, and Pi against single-model baselines, and no savings claim should be made before those exist.
 
 ## Policy file
 

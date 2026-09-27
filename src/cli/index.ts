@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+import { readFile } from "node:fs/promises";
 import { startDaemon } from "../daemon/server";
+import { replay } from "../measure/replay";
+import { parseLog, summarize } from "../measure/stats";
 import { createJudge } from "../runtime/judge-factory";
 import { JsonlLogger } from "../runtime/log";
 import { decisionsLogPath, resolvePolicyPath } from "../runtime/paths";
@@ -8,7 +11,12 @@ import { AGENTS, type Agent, runSetup } from "./setup";
 
 const USAGE = `jev-router <command>
 
-  up [--host 127.0.0.1] [--port 4141]   start the local relay and decision service
+  up [--host 127.0.0.1] [--port 4141] [--shadow <candidate>]
+                                        start the local relay and decision service; --shadow serves one
+                                        candidate for everything and only logs what the router would do
+  stats [--log <path>]                  cost and routing summary of the decision log, against every baseline
+  replay --policy <file> [--log <path>] [--policy-id default]
+                                        re-decide the log under another policy using recorded judge answers
   setup [--agent <name>]... [--dry-run] [--port 4141]
                                         point installed harnesses at the relay and install their hook packs
                                         agents: claude-code, codex, opencode, pi (default: all)
@@ -31,7 +39,16 @@ async function up(args: readonly string[]): Promise<void> {
   const logger = new JsonlLogger(decisionsLogPath());
   const host = flag(args, "--host") ?? "127.0.0.1";
   const port = Number(flag(args, "--port") ?? 4141);
-  const daemon = await startDaemon({ policy, ...(judge ? { judge } : {}), log: (r) => logger.write(r), host, port });
+  const shadow = flag(args, "--shadow");
+  const daemon = await startDaemon({
+    policy,
+    ...(judge ? { judge } : {}),
+    log: (r) => logger.write(r),
+    host,
+    port,
+    ...(shadow ? { shadow } : {}),
+  });
+  if (shadow) console.error(`  shadow  serving '${shadow}' for every routed request; decisions are logged only`);
   console.error(`jev-router listening on ${daemon.url}`);
   console.error(`  policy  ${policyPath}`);
   console.error(`  judge   ${policy.judge.transport}${judge ? "" : " (none: deterministic only)"}`);
@@ -67,6 +84,7 @@ async function setup(args: readonly string[]): Promise<void> {
     hookCommand: process.argv[1] ? `${process.execPath} ${process.argv[1]}` : "jev-router",
     dryRun: args.includes("--dry-run"),
     examplePolicyPath: examplePolicy,
+    openCodePluginPath: new URL("../adapters/opencode/plugin.js", import.meta.url).pathname,
     log: (line) => console.log(line),
   });
 }
@@ -91,11 +109,64 @@ async function hook(args: readonly string[]): Promise<void> {
   console.log("{}");
 }
 
+const usd = (n: number): string => `$${n.toFixed(4)}`;
+const pct = (n: number | null): string => (n === null ? "n/a" : `${(n * 100).toFixed(1)}%`);
+
+async function loadLog(args: readonly string[]): Promise<ReturnType<typeof parseLog>> {
+  const path = flag(args, "--log") ?? decisionsLogPath();
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (e) {
+    throw new Error(`cannot read decision log at ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return parseLog(text);
+}
+
+async function stats(args: readonly string[]): Promise<void> {
+  const policy = await readPolicyFile(flag(args, "--policy") ?? (await resolvePolicyPath()));
+  const { records, skipped } = await loadLog(args);
+  const s = summarize(records, policy);
+  console.log(
+    `decisions ${s.decisions} across ${s.sessions} sessions (${s.withUsage} with usage${skipped ? `, ${skipped} malformed lines skipped` : ""})`,
+  );
+  console.log(
+    `actual cost ${usd(s.actualCostUsd)}   judge ${s.judge.calls} calls ${usd(s.judge.costUsd)} p50 ${s.judge.latencyP50Ms ?? "-"}ms p95 ${s.judge.latencyP95Ms ?? "-"}ms, ${s.judge.failures} failed   apply failures ${s.applyFailures}`,
+  );
+  console.log("baseline            cost      savings    pct");
+  for (const [id, b] of Object.entries(s.baselines))
+    console.log(`always ${id.padEnd(12)} ${usd(b.costUsd).padStart(9)} ${usd(b.savingsUsd).padStart(10)} ${pct(b.savingsPct).padStart(7)}`);
+  console.log(`by candidate ${JSON.stringify(s.byCandidate)}`);
+  console.log(`by source    ${JSON.stringify(s.bySource)}`);
+}
+
+async function replayCmd(args: readonly string[]): Promise<void> {
+  const policyPath = flag(args, "--policy");
+  if (!policyPath) throw new Error("replay needs --policy <file>");
+  const policy = await readPolicyFile(policyPath);
+  const policyId = flag(args, "--policy-id") ?? policy.routes[0]?.policy ?? Object.keys(policy.policies)[0] ?? "default";
+  const { records } = await loadLog(args);
+  const r = replay(records, policy, policyId);
+  console.log(
+    `replayed ${r.results.length} decisions under ${policyPath} (${policyId}): ${r.changed} changed, ${r.unjudged} without recorded judge answers`,
+  );
+  console.log(
+    `recorded cost ${usd(r.recordedCostUsd)}  replayed cost ${usd(r.replayedCostUsd)}  delta ${usd(r.replayedCostUsd - r.recordedCostUsd)} (same tokens assumed)`,
+  );
+  const moves: Record<string, number> = {};
+  for (const x of r.results)
+    if (x.recorded.candidate !== x.replayed.candidate)
+      moves[`${x.recorded.candidate} -> ${x.replayed.candidate}`] = (moves[`${x.recorded.candidate} -> ${x.replayed.candidate}`] ?? 0) + 1;
+  for (const [k, v] of Object.entries(moves)) console.log(`  ${k}: ${v}`);
+}
+
 async function main(argv: readonly string[]): Promise<void> {
   const [command, ...rest] = argv;
   if (command === "up") return up(rest);
   if (command === "setup") return setup(rest);
   if (command === "hook") return hook(rest);
+  if (command === "stats") return stats(rest);
+  if (command === "replay") return replayCmd(rest);
   if (command === "policy") return policy();
   console.log(USAGE);
   if (command && command !== "help") process.exitCode = 1;

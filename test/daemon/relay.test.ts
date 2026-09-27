@@ -399,3 +399,40 @@ describe("native hook ingest", () => {
     expect(bad.status).toBe(400);
   });
 });
+
+describe("shadow mode", () => {
+  test("serves the pinned candidate while logging the router's decision", async () => {
+    reset();
+    upstreamMode = "json";
+    const shadowRecords: DecisionRecord[] = [];
+    const raw = minimalPolicy();
+    (raw as { egress?: unknown }).egress = { openrouter: { base_url: upstreamUrl, api_key_env: "TEST_UPSTREAM_KEY" } };
+    for (const c of Object.values(raw.candidates)) (c as { via?: string }).via = "openrouter";
+    const shadowDaemon = await startDaemon({
+      policy: loadPolicy(raw),
+      judge,
+      env: { TEST_UPSTREAM_KEY: "k" },
+      log: (r) => {
+        shadowRecords.push(r);
+      },
+      port: 0,
+      shadow: "fast",
+    });
+    try {
+      const res = await fetch(`${shadowDaemon.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-claude-code-session-id": "shadow-1" },
+        body: JSON.stringify(anthropicBody("auto", { stream: false })),
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-jev-router-source")).toBe("shadow");
+      expect(res.headers.get("x-jev-router-candidate")).toBe("fast");
+      expect(res.headers.get("x-jev-router-decision")).toBe("mid");
+      expect((captured.at(-1)!.body as { model: string }).model).toBe("openai/gpt-5.4-mini");
+      expect(shadowRecords[0]!.decision.candidate).toBe("mid");
+      expect(shadowRecords[0]!.shadow).toEqual({ served: "fast" });
+    } finally {
+      await shadowDaemon.close();
+    }
+  });
+});
