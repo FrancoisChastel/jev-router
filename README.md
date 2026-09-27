@@ -68,7 +68,7 @@ Responses carry `x-jev-router-model`, `x-jev-router-candidate`, `x-jev-router-ef
 
 Two more endpoints serve plugins: `POST /decide` returns a decision for a request a plugin describes itself, and `POST /observe` accepts hook events such as `{ "session": "cc:<id>", "event": "compaction" }` or `{ "event": "tool_result", "tool": { "name": "Bash", "isError": true, "text": "..." } }` so harness hooks can feed higher-fidelity signals than body parsing recovers.
 
-The relay binds to localhost and does not authenticate callers. Keep it there.
+The relay binds to localhost by default. Binding anywhere else requires `--token` (or `JEV_ROUTER_TOKEN`), which every request must then present as a bearer token or `x-api-key`, because the relay injects your real provider key.
 
 ## Measure before believing
 
@@ -92,7 +92,7 @@ None of this is a benchmark. [docs/evaluation.md](./docs/evaluation.md) is the r
 { "when": "stakes >= 2 and difficulty >= 3", "then": { "at_least": "frontier", "effort": "high" } }
 ```
 
-Actions: `pin`, `at_least`, `up`, `allow_down`, `effort`, `hold_turns`.
+Actions: `pin`, `at_least`, `up`, `allow_down`, `effort`, `hold_turns`. A candidate's `effort` list is the set of levels its model actually accepts; decisions are clamped to it before the relay writes the value, so list only levels the upstream supports.
 
 ## Library
 

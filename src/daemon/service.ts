@@ -40,10 +40,15 @@ export interface RouterServiceDeps {
 export class RouterService {
   constructor(private readonly deps: RouterServiceDeps) {}
 
+  /** The candidate a session is currently assigned to, if any. Read-only. */
+  currentCandidate(sessionKey: string): string | undefined {
+    return this.deps.store.get(sessionKey)?.current?.candidate;
+  }
+
   async decide(input: DecideInput): Promise<Decided> {
     const { policy, judge, store } = this.deps;
     const session = store.get(input.sessionKey) ?? emptySession();
-    const pending = store.takePending(input.sessionKey);
+    const pending = store.peekPending(input.sessionKey);
     const toolOutcomes: readonly ToolOutcome[] = pending.outcomes.length > 0 ? pending.outcomes : input.body.toolOutcomes;
     const b = input.body;
     const request: NormalizedRequest = {
@@ -101,7 +106,10 @@ export class RouterService {
       ...(trace ? { judge: trace } : {}),
       stage,
       commit: (apply, usage, shadow) => {
-        if (apply.ok) store.set(input.sessionKey, concluded.session);
+        if (apply.ok) {
+          store.set(input.sessionKey, concluded.session);
+          store.clearPending(input.sessionKey, pending);
+        }
         const record = buildDecisionRecord({
           id: this.deps.randomId(),
           ts: this.deps.now(),

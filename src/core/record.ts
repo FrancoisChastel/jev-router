@@ -35,6 +35,8 @@ export interface DecisionRecord {
   /** Whether the adapter managed to apply the decision. Absent when the adapter has nothing to apply. */
   readonly apply?: ApplyOutcome;
   readonly usage?: TokenUsage;
+  /** Present in shadow mode: the candidate that actually served the request while the decision was only logged. */
+  readonly shadow?: { readonly served: string };
 }
 
 export interface ApplyOutcome {

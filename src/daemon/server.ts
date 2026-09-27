@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Policy } from "../core/policy/types";
 import type { DecisionRecord } from "../core/record";
 import type { Harness, RequestClass, ToolOutcome } from "../core/types";
+import type { FetchLike } from "../judge/http";
 import type { Judge } from "../judge/types";
 import { DIALECTS } from "./dialects";
 import { asEffort, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
@@ -18,12 +19,24 @@ export interface DaemonOptions {
   readonly log?: (record: DecisionRecord) => void;
   readonly host?: string;
   readonly port?: number;
-  readonly fetch?: typeof fetch;
+  readonly fetch?: FetchLike;
   readonly now?: () => number;
   readonly randomId?: () => string;
   readonly maxBodyBytes?: number;
   /** Serve this candidate for every routed request and only log the router's decision. */
   readonly shadow?: string;
+  /**
+   * Shared secret callers must present as `Authorization: Bearer <token>` or `x-api-key`. Required when
+   * binding to anything other than loopback, because the relay injects real provider credentials.
+   */
+  readonly token?: string;
+}
+
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function presentsToken(headers: Readonly<Record<string, string | undefined>>, token: string): boolean {
+  const auth = headers.authorization ?? "";
+  return auth === `Bearer ${token}` || headers["x-api-key"] === token;
 }
 
 export interface RunningDaemon {
@@ -115,6 +128,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     const method = req.method ?? "GET";
     const headers = flattenHeaders(req);
 
+    if (opts.token && path !== "/healthz" && !presentsToken(headers, opts.token)) {
+      sendJson(res, 401, errorBody(dialectForPath(path)?.dialect, 401, "jev-router: missing or invalid token"));
+      return;
+    }
     if (method === "HEAD" && path === "/api/hello") {
       res.writeHead(200);
       res.end();
@@ -233,6 +250,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     });
   });
   const host = opts.host ?? "127.0.0.1";
+  if (!LOOPBACK.has(host) && !opts.token) {
+    throw new Error(
+      `refusing to bind ${host} without a token: the relay injects provider credentials, so set --token (or JEV_ROUTER_TOKEN) for any non-loopback bind`,
+    );
+  }
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(opts.port ?? 0, host, () => resolve());

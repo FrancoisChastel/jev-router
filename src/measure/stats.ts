@@ -73,7 +73,8 @@ export function summarize(records: readonly DecisionRecord[], policy: Policy): S
     }
     if (!r.usage) continue;
     withUsage += 1;
-    const served = policy.candidates[r.decision.candidate];
+    // In shadow mode the served candidate, not the router's pick, is what was billed.
+    const served = policy.candidates[r.shadow?.served ?? r.decision.candidate];
     if (served) actual += costOf(served, r.usage);
     for (const [id, c] of Object.entries(policy.candidates)) baselineCost[id] = (baselineCost[id] ?? 0) + costOf(c, r.usage);
   }

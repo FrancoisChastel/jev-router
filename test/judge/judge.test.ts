@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { endpointFor, HttpJudge, JudgeError } from "../../src/judge/http";
+import { endpointFor, type FetchLike, HttpJudge, JudgeError } from "../../src/judge/http";
 import { MockJudge } from "../../src/judge/mock";
 import type { JudgeRequest } from "../../src/judge/types";
 
@@ -34,7 +34,7 @@ describe("http judge", () => {
 
   test("sends the TypeSafe request shape and normalizes the response", async () => {
     const calls: { url: string; init: RequestInit }[] = [];
-    const fetchImpl: typeof fetch = async (url, init) => {
+    const fetchImpl: FetchLike = async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       return new Response(
         JSON.stringify({
@@ -68,7 +68,7 @@ describe("http judge", () => {
 
   test("omits session_id on transports that do not accept it", async () => {
     let body: Record<string, unknown> = {};
-    const fetchImpl: typeof fetch = async (_url, init) => {
+    const fetchImpl: FetchLike = async (_url, init) => {
       body = JSON.parse(String(init?.body));
       return Response.json({
         model: "jev-1.13.0",
@@ -83,7 +83,7 @@ describe("http judge", () => {
 
   test("retries once on 429 with backoff, then succeeds", async () => {
     let n = 0;
-    const fetchImpl: typeof fetch = async () => {
+    const fetchImpl: FetchLike = async () => {
       n += 1;
       if (n === 1) return new Response("slow down", { status: 429 });
       return Response.json({
@@ -99,7 +99,7 @@ describe("http judge", () => {
 
   test("does not retry permanent failures and surfaces the status", async () => {
     let n = 0;
-    const fetchImpl: typeof fetch = async () => {
+    const fetchImpl: FetchLike = async () => {
       n += 1;
       return new Response(JSON.stringify({ message: "bad key", error_type: "authentication" }), { status: 401 });
     };
@@ -111,7 +111,7 @@ describe("http judge", () => {
 
   test("an already-aborted signal is rejected before any fetch", async () => {
     let n = 0;
-    const fetchImpl: typeof fetch = async () => {
+    const fetchImpl: FetchLike = async () => {
       n += 1;
       return Response.json({ model: "m", answers: {}, usage: {} });
     };
@@ -125,7 +125,7 @@ describe("http judge", () => {
   test("an abort during retry backoff prevents the next attempt", async () => {
     let n = 0;
     const ctrl = new AbortController();
-    const fetchImpl: typeof fetch = async () => {
+    const fetchImpl: FetchLike = async () => {
       n += 1;
       ctrl.abort();
       return new Response("busy", { status: 429 });
@@ -149,17 +149,17 @@ describe("http judge", () => {
       { difficulty: { type: "noul", noul: 0.5 }, urgent: good.urgent },
     ];
     for (const answers of bad) {
-      const fetchImpl: typeof fetch = async () => Response.json({ model: "m", answers, usage: { input_tokens: 1, output_tokens: 0 } });
+      const fetchImpl: FetchLike = async () => Response.json({ model: "m", answers, usage: { input_tokens: 1, output_tokens: 0 } });
       const judge = new HttpJudge({ transport: "typesafe", apiKey: "k", fetch: fetchImpl });
       await expect(judge.evaluate(request)).rejects.toMatchObject({ code: "invalid_response", retryable: false });
     }
-    const okFetch: typeof fetch = async () => Response.json({ model: "m", answers: good, usage: { input_tokens: 1, output_tokens: 0 } });
+    const okFetch: FetchLike = async () => Response.json({ model: "m", answers: good, usage: { input_tokens: 1, output_tokens: 0 } });
     const res = await new HttpJudge({ transport: "typesafe", apiKey: "k", fetch: okFetch }).evaluate(request);
     expect(res.answers.difficulty?.type).toBe("score");
   });
 
   test("times out and reports a retryable error", async () => {
-    const fetchImpl: typeof fetch = (_url, init) =>
+    const fetchImpl: FetchLike = (_url, init) =>
       new Promise((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
       });

@@ -22,9 +22,23 @@ describe("claude code settings plan", () => {
     expect(out.env.ANTHROPIC_API_KEY).toBe("");
     expect(out.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS).toBe("1");
     expect(out.hooks.PostToolUse).toHaveLength(2);
-    expect(out.hooks.PostToolUse[0]!.hooks[0]!.type).toBe("command");
-    expect(out.hooks.PostToolUse[1]!.hooks[0]).toEqual({ type: "http", url: "http://127.0.0.1:4141/hooks/claude-code", timeout: 2 });
+    expect(out.hooks.PostToolUse![0]!.hooks[0]!.type).toBe("command");
+    expect(out.hooks.PostToolUse![1]!.hooks[0]).toEqual({ type: "http", url: "http://127.0.0.1:4141/hooks/claude-code", timeout: 2 });
     expect(out.hooks.StopFailure).toHaveLength(1);
+  });
+
+  test("only removes its own hooks, never unrelated ones with /hooks/ in the URL", () => {
+    const existing = {
+      hooks: {
+        PostToolUse: [
+          { hooks: [{ type: "http", url: "https://ci.example.internal/hooks/notify-build" }] },
+          { hooks: [{ type: "http", url: "http://127.0.0.1:5000/hooks/claude-code", timeout: 2 }] },
+        ],
+      },
+    };
+    const out = planClaudeCodeSettings(existing, target) as { hooks: { PostToolUse: { hooks: { url: string }[] }[] } };
+    const urls = out.hooks.PostToolUse!.map((e) => e.hooks[0]!.url);
+    expect(urls).toEqual(["https://ci.example.internal/hooks/notify-build", "http://127.0.0.1:4141/hooks/claude-code"]);
   });
 
   test("is idempotent", () => {
@@ -48,6 +62,14 @@ describe("codex plans", () => {
     expect(twice.match(/\[model_providers\.jev-router\]/g)).toHaveLength(1);
     expect(twice).toContain('base_url = "http://127.0.0.1:5000/v1"');
     expect(twice.match(/^model_provider = /gm)).toHaveLength(1);
+  });
+
+  test("config.toml never touches profile-scoped model keys", () => {
+    const existing = '[model_providers.openai]\nname = "OpenAI"\n\n[profiles.default]\nmodel = "o3"\nmodel_provider = "openai"\n';
+    const out = planCodexConfig(existing, target);
+    expect(out).toContain('[profiles.default]\nmodel = "o3"\nmodel_provider = "openai"');
+    expect(out.startsWith('model_provider = "jev-router"\nmodel = "auto"\n')).toBe(true);
+    expect(out.match(/^model = /gm)).toHaveLength(2);
   });
 
   test("hooks.json uses async command hooks and does not duplicate", () => {

@@ -59,7 +59,7 @@ describe("dossier", () => {
   });
 
   test("never includes the full conversation or system prompt keys", () => {
-    const d = buildDossier(req()) as Record<string, unknown>;
+    const d = buildDossier(req()) as unknown as Record<string, unknown>;
     expect(Object.keys(d).sort()).toEqual(["harness", "images", "intent", "recent_tools", "task", "tools"].filter((k) => k in d).sort());
     expect("messages" in d).toBe(false);
     expect("system" in d).toBe(false);

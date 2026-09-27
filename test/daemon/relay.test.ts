@@ -400,6 +400,21 @@ describe("native hook ingest", () => {
   });
 });
 
+describe("token gate", () => {
+  test("a non-loopback bind without a token is refused, and a token guards every endpoint but health", async () => {
+    await expect(startDaemon({ policy: loadPolicy(minimalPolicy()), port: 0, host: "0.0.0.0" })).rejects.toThrow(/token/);
+    const guarded = await startDaemon({ policy: loadPolicy(minimalPolicy()), port: 0, token: "s3cret" });
+    try {
+      expect((await fetch(`${guarded.url}/healthz`)).status).toBe(200);
+      expect((await fetch(`${guarded.url}/v1/models`)).status).toBe(401);
+      expect((await fetch(`${guarded.url}/v1/models`, { headers: { authorization: "Bearer s3cret" } })).status).toBe(200);
+      expect((await fetch(`${guarded.url}/v1/models`, { headers: { "x-api-key": "s3cret" } })).status).toBe(200);
+    } finally {
+      await guarded.close();
+    }
+  });
+});
+
 describe("shadow mode", () => {
   test("serves the pinned candidate while logging the router's decision", async () => {
     reset();

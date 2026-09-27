@@ -11,9 +11,10 @@ import { AGENTS, type Agent, runSetup } from "./setup";
 
 const USAGE = `jev-router <command>
 
-  up [--host 127.0.0.1] [--port 4141] [--shadow <candidate>]
+  up [--host 127.0.0.1] [--port 4141] [--shadow <candidate>] [--token <secret>]
                                         start the local relay and decision service; --shadow serves one
-                                        candidate for everything and only logs what the router would do
+                                        candidate for everything and only logs what the router would do;
+                                        --token (or JEV_ROUTER_TOKEN) is required for any non-loopback host
   stats [--log <path>]                  cost and routing summary of the decision log, against every baseline
   replay --policy <file> [--log <path>] [--policy-id default]
                                         re-decide the log under another policy using recorded judge answers

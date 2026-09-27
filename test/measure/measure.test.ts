@@ -38,16 +38,23 @@ describe("stats", () => {
     // fast: 10k*0.15/1M + 1k*0.6/1M = 0.0015+0.0006 = 0.0021 ; mid: 0.03+0.015 = 0.045 ; frontier: 0.1+0.04 = 0.14
     expect(s.decisions).toBe(3);
     expect(s.actualCostUsd).toBeCloseTo(0.0021 + 0.045 + 0.14, 6);
-    expect(s.baselines.fast.costUsd).toBeCloseTo(0.0021 * 3, 6);
-    expect(s.baselines.frontier.costUsd).toBeCloseTo(0.14 * 3, 6);
-    expect(s.baselines.fast.savingsUsd).toBeLessThan(0);
-    expect(s.baselines.frontier.savingsUsd).toBeGreaterThan(0);
+    expect(s.baselines.fast!.costUsd).toBeCloseTo(0.0021 * 3, 6);
+    expect(s.baselines.frontier!.costUsd).toBeCloseTo(0.14 * 3, 6);
+    expect(s.baselines.fast!.savingsUsd).toBeLessThan(0);
+    expect(s.baselines.frontier!.savingsUsd).toBeGreaterThan(0);
     expect(s.judge.calls).toBe(2);
     expect(s.judge.costUsd).toBeCloseTo(0.00004, 8);
     expect(s.judge.latencyP50Ms).toBe(120);
     expect(s.byCandidate.fast).toBe(1);
     expect(s.bySource.judge).toBe(3);
     expect(s.withUsage).toBe(3);
+  });
+
+  test("shadow-mode records are priced by the candidate that was actually served", () => {
+    const shadowed = { ...rec({ candidate: "frontier", inTok: 1_000_000, outTok: 1_000_000 }), shadow: { served: "fast" } };
+    const s = summarize([shadowed], policy);
+    expect(s.actualCostUsd).toBeCloseTo(0.15 + 0.6, 6);
+    expect(s.byCandidate.frontier).toBe(1);
   });
 
   test("records without usage are counted but excluded from cost", () => {

@@ -45,7 +45,7 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && bun build src/core/index.ts src/judge/index.ts src/runtime/index.ts src/daemon/index.ts src/measure/index.ts src/adapters/pi/index.ts src/adapters/opencode/index.ts src/cli/index.ts --outdir dist --target node --splitting --external '@earendil-works/*' --external '@opencode-ai/*' && bun build src/adapters/opencode/index.ts --outfile dist/adapters/opencode/plugin.js --target node --external '@opencode-ai/*' && tsc --emitDeclarationOnly --declaration --outDir dist",
+    "build": "rm -rf dist && bun build src/core/index.ts src/judge/index.ts src/runtime/index.ts src/daemon/index.ts src/measure/index.ts src/adapters/pi/index.ts src/adapters/opencode/index.ts src/cli/index.ts --outdir dist --target node --splitting --external '@earendil-works/*' --external '@opencode-ai/*' && bun build src/adapters/opencode/index.ts --outfile dist/adapters/opencode/plugin.js --target node --external '@opencode-ai/*' && tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "biome check .",

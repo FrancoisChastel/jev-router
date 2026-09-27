@@ -88,12 +88,18 @@ export class SessionStore {
     this.evict();
   }
 
-  /** Returns and clears the hook-reported signals for a session. */
-  takePending(key: string): PendingSignals {
+  /** Hook-reported signals waiting for the next request. Cleared with `clearPending` once a decision took effect. */
+  peekPending(key: string): PendingSignals {
+    return this.entries.get(key)?.pending ?? NO_PENDING;
+  }
+
+  /** Drop the pending signals that `consumed` captured, keeping anything reported since. */
+  clearPending(key: string, consumed: PendingSignals): void {
     const e = this.entries.get(key);
-    if (!e) return NO_PENDING;
-    if (e.pending !== NO_PENDING) this.entries.set(key, { ...e, pending: NO_PENDING });
-    return e.pending;
+    if (!e || e.pending === NO_PENDING) return;
+    const outcomes = e.pending.outcomes.slice(consumed.outcomes.length);
+    const compaction = e.pending.compaction && !consumed.compaction;
+    this.entries.set(key, { ...e, pending: outcomes.length === 0 && !compaction ? NO_PENDING : { compaction, outcomes } });
   }
 
   sweep(): void {

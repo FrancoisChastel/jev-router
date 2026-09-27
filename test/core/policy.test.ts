@@ -25,7 +25,7 @@ describe("policy loading", () => {
     expect(() => loadPolicy(badExpr)).toThrow(/rule/);
 
     const badAction = minimalPolicy();
-    (badAction.policies.default.rules[0] as { then: Record<string, unknown> }).then = { teleport: true };
+    (badAction.policies.default.rules[0] as unknown as { then: Record<string, unknown> }).then = { teleport: true };
     expect(() => loadPolicy(badAction)).toThrow(/action/);
   });
 

@@ -11,7 +11,9 @@ export interface SseTransformOptions {
 
 const DATA_PREFIX = "data:";
 
-function rewriteDataLine(line: string, opts: SseTransformOptions): string {
+function rewriteDataLine(rawLine: string, opts: SseTransformOptions): string {
+  const cr = rawLine.endsWith("\r") ? "\r" : "";
+  const line = cr ? rawLine.slice(0, -1) : rawLine;
   const payload = line.slice(DATA_PREFIX.length).trimStart();
   if (!payload.startsWith("{")) return line;
   let json: unknown;
@@ -35,8 +37,8 @@ function rewriteDataLine(line: string, opts: SseTransformOptions): string {
   }
   const usage = obj.usage ?? (typeof message === "object" && message !== null ? (message as { usage?: unknown }).usage : undefined);
   if (opts.onUsage && typeof usage === "object" && usage !== null) opts.onUsage(usage as Record<string, unknown>);
-  if (!changed) return line;
-  return `${line.slice(0, DATA_PREFIX.length)} ${JSON.stringify(out)}`;
+  if (!changed) return rawLine;
+  return `${line.slice(0, DATA_PREFIX.length)} ${JSON.stringify(out)}${cr}`;
 }
 
 export function createSseTransform(opts: SseTransformOptions): TransformStream<Uint8Array, Uint8Array> {

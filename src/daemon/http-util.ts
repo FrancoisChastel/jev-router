@@ -93,7 +93,8 @@ export function readJsonBody(req: IncomingMessage, limitBytes: number): Promise<
 }
 
 export function errorBody(dialect: Dialect | undefined, status: number, message: string): string {
-  const type = status === 400 ? "invalid_request_error" : status === 404 ? "not_found_error" : status === 502 ? "api_error" : "api_error";
+  const type =
+    status === 400 ? "invalid_request_error" : status === 401 ? "authentication_error" : status === 404 ? "not_found_error" : "api_error";
   if (dialect === "anthropic") return JSON.stringify({ type: "error", error: { type, message } });
   return JSON.stringify({ error: { message, type, code: null } });
 }

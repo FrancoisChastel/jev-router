@@ -2,6 +2,9 @@ import type { Answer, EvaluateOptions, Judge, JudgeRequest, JudgeResult, JudgeUs
 
 export type Transport = "typesafe" | "vercel" | "openrouter";
 
+/** Anything shaped like fetch. Structural so tests and hosts can inject a plain function. */
+export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 const ENDPOINTS: Readonly<
   Record<Transport, { readonly base: string; readonly path: string; readonly model: string; readonly sessionField: boolean }>
 > = {
@@ -41,7 +44,7 @@ export interface HttpJudgeOptions {
   readonly maxRetries?: number;
   /** Base backoff. Default 250 ms, doubled per attempt with jitter. */
   readonly retryDelayMs?: number;
-  readonly fetch?: typeof fetch;
+  readonly fetch?: FetchLike;
   readonly extraHeaders?: Readonly<Record<string, string>>;
 }
 
@@ -112,7 +115,7 @@ export class HttpJudge implements Judge {
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly retryDelayMs: number;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: FetchLike;
 
   constructor(private readonly opts: HttpJudgeOptions) {
     const e = endpointFor(opts.transport, opts.baseUrl);

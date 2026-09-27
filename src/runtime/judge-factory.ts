@@ -1,5 +1,5 @@
 import type { JudgeConfig } from "../core/policy/types";
-import { HttpJudge } from "../judge/http";
+import { type FetchLike, HttpJudge } from "../judge/http";
 import type { Judge } from "../judge/types";
 import type { Env } from "./paths";
 

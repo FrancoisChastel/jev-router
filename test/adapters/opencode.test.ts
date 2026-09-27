@@ -31,7 +31,7 @@ describe("opencode plugin", () => {
     const posted: unknown[] = [];
     let fail = false;
     const warnings: string[] = [];
-    const fetchImpl: typeof fetch = async (_url, init) => {
+    const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit) => {
       if (fail) throw new Error("ECONNREFUSED");
       posted.push(JSON.parse(String(init?.body)));
       return new Response(null, { status: 204 });

@@ -45,7 +45,7 @@ function harness(judge: Judge | undefined, over: Partial<PiRouterDeps<Ref>> = {}
       calls.status.push(t);
     },
     log: (r) => {
-      calls.log.push(r as Record<string, unknown>);
+      calls.log.push(r as unknown as Record<string, unknown>);
     },
     now: () => 1_000,
     randomId: () => "id-1",

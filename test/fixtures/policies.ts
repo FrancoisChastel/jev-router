@@ -1,6 +1,18 @@
-import type { PolicyInput } from "../../src/core/policy/types";
+import type { CandidateInput, EgressInput, JudgeConfigInput, PolicyDefInput, RouteInput, RuleInput } from "../../src/core/policy/types";
 
-export function minimalPolicy(): PolicyInput {
+/** Deeply mutable view of a type, so tests can tweak fixtures without casts. */
+type Mutable<T> = T extends readonly (infer U)[] ? Mutable<U>[] : T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
+
+export interface TestPolicy {
+  version: 1;
+  judge: Mutable<JudgeConfigInput>;
+  egress?: Record<string, Mutable<EgressInput>>;
+  candidates: { fast: Mutable<CandidateInput>; mid: Mutable<CandidateInput>; frontier: Mutable<CandidateInput> };
+  routes: Mutable<RouteInput>[];
+  policies: { default: Mutable<PolicyDefInput> & { rules: Mutable<RuleInput>[] } };
+}
+
+export function minimalPolicy(): TestPolicy {
   return {
     version: 1,
     judge: { transport: "mock", timeout_ms: 1500, on_error: "fail_open", mode: "signals" },

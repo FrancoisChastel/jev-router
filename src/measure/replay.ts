@@ -72,7 +72,7 @@ export function replay(records: readonly DecisionRecord[], policy: Policy, polic
       }
       if (decision.candidate !== r.decision.candidate) changed += 1;
       if (r.usage) {
-        const served = policy.candidates[r.decision.candidate];
+        const served = policy.candidates[r.shadow?.served ?? r.decision.candidate];
         const now = policy.candidates[decision.candidate];
         if (served) recordedCost += costOf(served, r.usage);
         if (now) replayedCost += costOf(now, r.usage);

@@ -48,6 +48,11 @@ describe("sse transform", () => {
     expect(out).toBe(input);
   });
 
+  test("keeps CRLF framing on rewritten lines", async () => {
+    const { out } = await run(['data: {"model":"up","x":1}\r\n\r\n'], "req");
+    expect(out).toBe('data: {"model":"req","x":1}\r\n\r\n');
+  });
+
   test("flushes a trailing partial line at close", async () => {
     const { out } = await run(['data: {"model":"up","x":1}'], "req");
     expect(out).toBe('data: {"model":"req","x":1}');

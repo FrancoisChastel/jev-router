@@ -16,22 +16,23 @@ Harbor runs each task in a Docker container. `127.0.0.1` inside the container is
 - Linux: either run Harbor's containers with host networking, or bind to the Docker bridge address (`docker network inspect bridge` shows it, usually `172.17.0.1`).
 
 ```bash
-jev-router up --host 0.0.0.0 --port 4141
+export JEV_ROUTER_TOKEN=$(openssl rand -hex 16)
+jev-router up --host 0.0.0.0 --port 4141          # refuses a non-loopback bind without a token
 export RELAY=http://host.docker.internal:4141     # Linux with a bridge bind: http://172.17.0.1:4141
 ```
 
-The relay has no authentication. Bind it wider than localhost only for the duration of a run, on a machine you control, and stop it afterwards.
+The relay injects your real provider key, so a non-loopback bind requires a token, and every request must present it. Pass it as the harness credential below. Stop the relay after the run.
 
 ## Routed runs
 
-The relay accepts any credential and swaps in the egress key, so the credential Harbor passes can be a placeholder.
+The relay checks the credential Harbor passes against its token, then swaps in the egress key.
 
 Claude Code, Anthropic Messages format, one task to start:
 
 ```bash
 harbor run --dataset terminal-bench@2.0 --agent claude-code \
   --model claude-code/auto \
-  --ae "ANTHROPIC_API_KEY=jev-router" \
+  --ae "ANTHROPIC_API_KEY=$JEV_ROUTER_TOKEN" \
   --ae "ANTHROPIC_BASE_URL=$RELAY" \
   --ae "CLAUDE_CODE_GATEWAY_HINT_HEADERS=1" \
   --n-tasks 1
@@ -42,7 +43,7 @@ Codex, Responses API:
 ```bash
 harbor run --dataset terminal-bench@2.0 --agent codex \
   --model auto \
-  --ae "OPENAI_API_KEY=jev-router" \
+  --ae "OPENAI_API_KEY=$JEV_ROUTER_TOKEN" \
   --ae "OPENAI_BASE_URL=$RELAY/v1" \
   --n-tasks 1
 ```
@@ -51,10 +52,10 @@ OpenCode and Pi, OpenAI chat format (the leading `openai/` selects the harness's
 
 ```bash
 harbor run --dataset terminal-bench@2.0 --agent opencode \
-  --model openai/auto --ae "OPENAI_API_KEY=jev-router" --ae "OPENAI_BASE_URL=$RELAY/v1" --n-tasks 1
+  --model openai/auto --ae "OPENAI_API_KEY=$JEV_ROUTER_TOKEN" --ae "OPENAI_BASE_URL=$RELAY/v1" --n-tasks 1
 
 harbor run --dataset terminal-bench@2.0 --agent pi \
-  --model openai/auto --ae "OPENAI_API_KEY=jev-router" --ae "OPENAI_BASE_URL=$RELAY/v1" \
+  --model openai/auto --ae "OPENAI_API_KEY=$JEV_ROUTER_TOKEN" --ae "OPENAI_BASE_URL=$RELAY/v1" \
   --ak model_api=openai-completions --n-tasks 1
 ```
 
@@ -66,7 +67,7 @@ Run the same commands with the relay still in the path but pinned, so the harnes
 
 ```bash
 jev-router up --host 0.0.0.0 --port 4141 --shadow fast       # then the routed command above
-jev-router up --host 0.0.0.0 --port 4141 --shadow frontier
+jev-router up --host 0.0.0.0 --port 4141 --shadow frontier   # both still need JEV_ROUTER_TOKEN set
 ```
 
 Shadow mode serves the pinned candidate for every request and still logs what the router would have chosen, so a single baseline run also yields a counterfactual routing trace. Alternatively point Harbor straight at the gateway with a fixed `--model`, as the Vercel and Switchyard guides show; that removes the relay from the baseline entirely.

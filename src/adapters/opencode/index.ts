@@ -1,6 +1,7 @@
 import type { Hooks, Plugin } from "@opencode-ai/plugin";
 import { looksLikeError } from "../../daemon/dialects/types";
 import type { ObserveEvent } from "../../daemon/session-store";
+import type { FetchLike } from "../../judge/http";
 
 const TEXT_TAIL = 200;
 const POST_TIMEOUT_MS = 1000;
@@ -9,7 +10,7 @@ const tail = (s: string): string => (s.length > TEXT_TAIL ? s.slice(-TEXT_TAIL) 
 export interface OpenCodeAdapterOptions {
   /** Relay base URL. Default $JEV_ROUTER_URL or http://127.0.0.1:4141. */
   readonly relayUrl?: string;
-  readonly fetch?: typeof fetch;
+  readonly fetch?: FetchLike;
   readonly warn?: (message: string) => void;
 }
 

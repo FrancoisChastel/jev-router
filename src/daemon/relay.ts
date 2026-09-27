@@ -4,6 +4,7 @@ import type { Candidate, EgressInput, Policy, RouteInput } from "../core/policy/
 import type { TokenUsage } from "../core/record";
 import { resolveSessionKey } from "../core/session";
 import type { Harness } from "../core/types";
+import type { FetchLike } from "../judge/http";
 import type { DialectAdapter, JsonObject } from "./dialects/types";
 import {
   copyResponseHeaders,
@@ -22,7 +23,7 @@ export interface RelayDeps {
   readonly policy: Policy;
   readonly service: RouterService;
   readonly env: Readonly<Record<string, string | undefined>>;
-  readonly fetch: typeof fetch;
+  readonly fetch: FetchLike;
   /** Shadow mode: always serve this candidate while logging what the router would have done. */
   readonly shadow?: string;
 }
@@ -50,6 +51,8 @@ function egressFor(policy: Policy, candidate: Candidate | undefined): { readonly
 }
 
 export interface RelayRequest {
+  /** Token counting must never route, log, or advance a session; it only needs a real model id. */
+  readonly countTokens?: boolean;
   readonly req: IncomingMessage;
   readonly res: ServerResponse;
   readonly headers: Headers;
@@ -89,6 +92,26 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
 
   const digest = createHash("sha256").update(normalized.prefixDigestInput).digest("hex").slice(0, 32);
   const { key: sessionKey } = resolveSessionKey(r.headers, digest);
+
+  if (r.countTokens) {
+    // Use the model this session is currently on (or the policy default) so the count matches the tokenizer in use.
+    const def = policy.policies[route.policy];
+    const current = deps.service.currentCandidate(sessionKey) ?? def?.default;
+    const candidate = current ? policy.candidates[current] : undefined;
+    const target = egressFor(policy, candidate);
+    if (!target || !candidate) {
+      sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, "no egress configured for token counting"));
+      return;
+    }
+    await forward(
+      deps,
+      r,
+      target,
+      { ...body, model: candidate.model },
+      { source: "count_tokens", requestedModel: normalized.requestedModel },
+    );
+    return;
+  }
   const requestClass = requestClassOf(r.headers);
   const decided = await deps.service.decide({
     harness,
@@ -112,6 +135,7 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
   const rewritten = r.dialect.rewrite(body, served);
   await forward(deps, r, target, rewritten, {
     source: shadow ? "shadow" : decided.decision.source,
+    requestedModel: normalized.requestedModel,
     extraHeaders: {
       "x-jev-router-model": served.model,
       "x-jev-router-candidate": servedId,
@@ -124,6 +148,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
 
 interface ForwardOptions {
   readonly source: string;
+  /** When set, the client's model id is echoed back in place of the upstream's. Absent for passthrough. */
+  readonly requestedModel?: string;
   readonly extraHeaders?: Record<string, string>;
   readonly onDone?: (ok: boolean, usage: TokenUsage | undefined, error?: string) => void;
 }
