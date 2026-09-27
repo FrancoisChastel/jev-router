@@ -6,6 +6,10 @@
 
 Route every turn of your coding agent to the cheapest model that can finish it.
 
+<p align="center">
+  <img src="docs/assets/flow.svg" width="880" alt="Requests from Claude Code, Codex, OpenCode, or Pi pass through jev-router, where tool signals, the jev judge, and a policy pick the fast, mid, or frontier tier via OpenRouter or Vercel AI Gateway.">
+</p>
+
 jev-router sits between Claude Code, Codex, OpenCode, or Pi and your model gateway. It watches how the agent is doing, asks [TypeSafe's jev](https://typesafe.ai) a few typed questions when the situation is unclear, and picks a model and reasoning effort per turn. It logs every decision with what it would have cost on every other model, so you can see whether routing pays before you trust it.
 
 - **One key, one bill.** An OpenRouter or Vercel AI Gateway key serves both the judge and inference.

@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 320" width="880" height="320" role="img" aria-labelledby="title">
+  <title id="title">jev-router: a coding agent's requests flow through tool signals, the jev judge, and a policy, then to the fast, mid, or frontier tier via a gateway.</title>
+  <!-- One neutral palette that reads on GitHub's light and dark themes alike; no fills, so the page shows through. -->
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #6e7781; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { fill: #8b949e; }
+    .box { fill: none; stroke: #8b949e; stroke-width: 1.25; }
+    .frame { fill: none; stroke: #6e7781; stroke-width: 1.25; }
+    .wire { fill: none; stroke: #8b949e; stroke-width: 1.25; }
+    .hot { stroke: #2f81f7; }
+    .step { fill: none; stroke: #8b949e; stroke-width: 1.25; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1,1 L9,5 L1,9" fill="none" stroke="#8b949e" stroke-width="1.25"/>
+    </marker>
+  </defs>
+
+  <!-- harnesses -->
+  <text x="20" y="44" font-size="11" letter-spacing="1.2" class="muted">HARNESS</text>
+  <g font-size="13" text-anchor="middle">
+    <rect class="box" x="20" y="62" width="160" height="34" rx="8"/><text x="100" y="84">Claude Code</text>
+    <rect class="box" x="20" y="110" width="160" height="34" rx="8"/><text x="100" y="132">Codex</text>
+    <rect class="box" x="20" y="158" width="160" height="34" rx="8"/><text x="100" y="180">OpenCode</text>
+    <rect class="box" x="20" y="206" width="160" height="34" rx="8"/><text x="100" y="228">Pi</text>
+  </g>
+  <path class="wire" d="M180,79 C220,79 210,160 250,160"/>
+  <path class="wire" d="M180,127 C220,127 210,160 250,160"/>
+  <path class="wire" d="M180,175 C220,175 210,160 250,160"/>
+  <path class="wire" d="M180,223 C220,223 210,160 250,160"/>
+
+  <!-- router -->
+  <rect class="frame" x="250" y="54" width="360" height="212" rx="12"/>
+  <text x="272" y="86" font-size="18" font-weight="600">jev-router</text>
+  <text x="272" y="106" font-size="12" class="muted">one decision per turn: model and effort</text>
+
+  <g font-size="13" text-anchor="middle">
+    <rect class="step" x="272" y="130" width="100" height="40" rx="8"/><text x="322" y="155">tool signals</text>
+    <rect class="step hot" x="392" y="130" width="96" height="40" rx="8"/><text x="440" y="155">jev judge</text>
+    <rect class="step" x="508" y="130" width="80" height="40" rx="8"/><text x="548" y="155">policy</text>
+  </g>
+  <line class="wire" x1="372" y1="150" x2="391" y2="150" marker-end="url(#arrow)"/>
+  <line class="wire" x1="488" y1="150" x2="507" y2="150" marker-end="url(#arrow)"/>
+
+  <g font-size="11.5" class="muted">
+    <text x="272" y="200">signals · severity, spinning, exploring, producing</text>
+    <text x="272" y="222">judge · a few typed questions, ~300 ms, $0.00003 a call</text>
+    <text x="272" y="244">policy · plain rules → tier, effort, hold; fails open</text>
+  </g>
+
+  <!-- tiers -->
+  <text x="680" y="44" font-size="11" letter-spacing="1.2" class="muted">TIER</text>
+  <path class="wire hot" stroke-width="2" d="M610,160 C645,160 645,79 680,79"/>
+  <path class="wire" d="M610,160 C645,160 645,160 680,160"/>
+  <path class="wire" d="M610,160 C645,160 645,241 680,241"/>
+  <g font-size="13">
+    <rect class="box hot" x="680" y="62" width="188" height="34" rx="8"/>
+    <text x="694" y="84" font-weight="600">fast</text><text x="734" y="84" font-size="12" class="mono muted">gpt-6-luna</text>
+    <rect class="box" x="680" y="143" width="188" height="34" rx="8"/>
+    <text x="694" y="165" font-weight="600">mid</text><text x="734" y="165" font-size="12" class="mono muted">claude-sonnet-5</text>
+    <rect class="box" x="680" y="224" width="188" height="34" rx="8"/>
+    <text x="694" y="246" font-weight="600">frontier</text><text x="756" y="246" font-size="11.5" class="mono muted">claude-opus-5.5</text>
+  </g>
+  <text x="680" y="288" font-size="11.5" class="muted">via OpenRouter or Vercel AI Gateway</text>
+  <text x="20" y="288" font-size="11.5" class="muted">every decision logged with its cost on every other tier</text>
+</svg>
