@@ -1,5 +1,6 @@
 export { anthropicDialect, DIALECTS, openaiChatDialect, openaiResponsesDialect } from "./dialects";
 export type { Dialect, DialectAdapter, NormalizedBody } from "./dialects/types";
+export { claudeCodeHookToObserve, codexHookToObserve } from "./hooks";
 export { detectHarness, mergeUsage } from "./http-util";
 export type { DaemonOptions, RunningDaemon } from "./server";
 export { startDaemon } from "./server";

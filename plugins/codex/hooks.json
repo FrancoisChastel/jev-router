@@ -1,0 +1,9 @@
+{
+  "description": "jev-router sensors for Codex: forwards tool results, compaction, prompts, and subagent starts to the local relay",
+  "hooks": {
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "jev-router hook codex", "timeout": 5, "async": true }] }],
+    "PostCompact": [{ "hooks": [{ "type": "command", "command": "jev-router hook codex", "timeout": 5, "async": true }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "jev-router hook codex", "timeout": 5, "async": true }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "jev-router hook codex", "timeout": 5, "async": true }] }]
+  }
+}

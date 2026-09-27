@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PostToolUse": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:4141/hooks/claude-code", "timeout": 2 }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:4141/hooks/claude-code", "timeout": 2 }] }],
+    "PostCompact": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:4141/hooks/claude-code", "timeout": 2 }] }],
+    "StopFailure": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:4141/hooks/claude-code", "timeout": 2 }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:4141/hooks/claude-code", "timeout": 2 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:4141/hooks/claude-code", "timeout": 2 }] }]
+  }
+}

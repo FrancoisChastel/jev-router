@@ -5,6 +5,7 @@ import type { Harness, RequestClass, ToolOutcome } from "../core/types";
 import type { Judge } from "../judge/types";
 import { DIALECTS } from "./dialects";
 import { asEffort, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
+import { claudeCodeHookToObserve, codexHookToObserve } from "./hooks";
 import { errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
 import { relay } from "./relay";
 import { RouterService } from "./service";
@@ -149,6 +150,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           query: url.search,
           rawBody: raw === "" ? "{}" : raw,
         });
+        return;
+      }
+      if (path === "/hooks/claude-code" || path === "/hooks/codex") {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(raw);
+        } catch {
+          sendJson(res, 400, errorBody(undefined, 400, "invalid JSON"));
+          return;
+        }
+        if (isObject(payload)) {
+          const event = path === "/hooks/claude-code" ? claudeCodeHookToObserve(payload) : codexHookToObserve(payload);
+          if (event) store.observe(event);
+        }
+        // Hook output format: an empty object means "no decision, carry on".
+        sendJson(res, 200, "{}");
         return;
       }
       if (path === "/observe") {

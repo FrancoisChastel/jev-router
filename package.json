@@ -9,6 +9,8 @@
   },
   "files": [
     "dist",
+    "plugins",
+    "examples",
     "README.md",
     "LICENSE"
   ],

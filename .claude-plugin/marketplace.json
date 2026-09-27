@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "jev-router",
+  "owner": { "name": "Francois Chastel", "url": "https://github.com/FrancoisChastel" },
+  "description": "jev-router: route each Claude Code turn to the cheapest capable model through a local relay",
+  "plugins": [
+    {
+      "name": "jev-router",
+      "source": "./plugins/claude-code",
+      "description": "Hooks that feed tool outcomes, compaction, and API failures to the jev-router relay, plus a status command",
+      "category": "productivity",
+      "tags": ["router", "cost", "models", "jev"]
+    }
+  ]
+}

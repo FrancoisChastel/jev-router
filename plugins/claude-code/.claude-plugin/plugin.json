@@ -1,0 +1,11 @@
+{
+  "name": "jev-router",
+  "displayName": "jev-router",
+  "version": "0.1.0",
+  "description": "Sensors for the jev-router relay: tool outcomes, compaction, subagents, and API failures reach the router without body parsing.",
+  "author": { "name": "Francois Chastel" },
+  "homepage": "https://github.com/FrancoisChastel/jev-router",
+  "repository": "https://github.com/FrancoisChastel/jev-router",
+  "license": "MIT",
+  "keywords": ["router", "jev", "cost"]
+}

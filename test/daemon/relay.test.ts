@@ -353,3 +353,49 @@ describe("daemon endpoints", () => {
     expect(await res.json()).toMatchObject({ type: "error", error: { type: "invalid_request_error" } });
   });
 });
+
+describe("native hook ingest", () => {
+  test("claude code hook payloads are accepted and feed the next relay decision", async () => {
+    reset();
+    const body = {
+      session_id: "hook-sess",
+      hook_event_name: "PostToolUseFailure",
+      tool_name: "Bash",
+      tool_use_error: "exit 1",
+      cwd: "/",
+      transcript_path: "/t",
+    };
+    for (let i = 0; i < 3; i += 1) {
+      const r = await fetch(`${daemon.url}/hooks/claude-code`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({});
+    }
+    const res = await fetch(`${daemon.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-claude-code-session-id": "hook-sess" },
+      body: JSON.stringify(anthropicBody()),
+    });
+    await res.text();
+    expect(["override", "signals", "judge"]).toContain(records[0]!.decision.source);
+    expect(records[0]!.signals?.severity).toBeGreaterThan(0.9);
+  });
+
+  test("unknown hook events are acknowledged without effect and bad JSON is a 400", async () => {
+    const r = await fetch(`${daemon.url}/hooks/codex`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: "x", hook_event_name: "Stop" }),
+    });
+    expect(r.status).toBe(200);
+    const bad = await fetch(`${daemon.url}/hooks/claude-code`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "nope",
+    });
+    expect(bad.status).toBe(400);
+  });
+});

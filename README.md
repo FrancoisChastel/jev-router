@@ -2,7 +2,7 @@
 
 Harness-agnostic LLM router for agentic coding. It routes each turn to the cheapest model and reasoning effort that can finish the job, using Switchyard-style execution signals from tool results and TypeSafe's jev as a fast, calibrated judge.
 
-Status: early. The core decision engine, the judge transports, the Pi extension, and the local relay exist. Hook packs for Claude Code and Codex, the OpenCode plugin, the installer, and the measurement tooling are next. See [DESIGN.md](./DESIGN.md).
+Status: early. The core decision engine, the judge transports, the Pi extension, the local relay, hook packs for Claude Code and Codex, and the installer exist. The OpenCode plugin and the measurement tooling (stats, replay, shadow mode, Harbor evaluation) are next. See [DESIGN.md](./DESIGN.md).
 
 ## How it decides
 
@@ -42,6 +42,18 @@ mkdir -p ~/.jev-router && cp examples/policy.json ~/.jev-router/policy.json
 export OPENROUTER_API_KEY=sk-or-...        # both the judge and the egress in the example policy
 npx jev-router up --port 4141
 ```
+
+### One-command setup
+
+```bash
+npx jev-router setup --dry-run              # show every change first
+npx jev-router setup                        # claude-code, codex, opencode, pi
+npx jev-router setup --agent claude-code    # one harness
+```
+
+Setup seeds `~/.jev-router/policy.json` from the example if missing, points each installed harness at the relay, installs its hook pack, and backs up every file it touches as `.bak`. Hook packs are sensors: Claude Code and Codex hooks cannot change the model, so they report tool outcomes, compaction, subagent starts, and API failures to the relay, which then has better evidence than body parsing recovers. Claude Code uses HTTP hooks with a two-second timeout; Codex uses `jev-router hook codex` as a command hook. A stopped relay never blocks a tool.
+
+The Claude Code plugin is also installable from this repo as a marketplace: `claude plugin marketplace add FrancoisChastel/jev-router`, then `claude plugin install jev-router@jev-router`. It adds `/jev-router:status`.
 
 Clients pick a route by model id. `auto` is the generic route; `claude-code/auto` exists because Claude Code's picker only shows ids containing `claude`. Any other model id passes straight through to the default egress.
 
