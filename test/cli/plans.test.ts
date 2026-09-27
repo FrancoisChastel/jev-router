@@ -41,6 +41,17 @@ describe("claude code settings plan", () => {
     expect(urls).toEqual(["https://ci.example.internal/hooks/notify-build", "http://127.0.0.1:4141/hooks/claude-code"]);
   });
 
+  test("writes the relay token as the harness credential when given", () => {
+    const out = planClaudeCodeSettings({ env: { ANTHROPIC_AUTH_TOKEN: "old" } }, { ...target, token: "t0k" }) as {
+      env: Record<string, string>;
+    };
+    expect(out.env.ANTHROPIC_AUTH_TOKEN).toBe("t0k");
+    const oc = planOpenCodeConfig(undefined, { ...target, token: "t0k" }) as {
+      provider: { "jev-router": { options: { apiKey: string } } };
+    };
+    expect(oc.provider["jev-router"].options.apiKey).toBe("t0k");
+  });
+
   test("is idempotent", () => {
     const once = planClaudeCodeSettings(undefined, target);
     const twice = planClaudeCodeSettings(once, target);

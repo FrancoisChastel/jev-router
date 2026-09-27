@@ -35,7 +35,8 @@ const ANTHROPIC_SSE = [
 let upstream: Server;
 let upstreamUrl = "";
 let captured: Captured[] = [];
-let upstreamMode: "sse" | "json" | "error" = "sse";
+let upstreamMode: "sse" | "json" | "error" | "slow" = "sse";
+let upstreamClosedEarly = false;
 let daemon: RunningDaemon;
 let records: DecisionRecord[] = [];
 const judge = new MockJudge(midAnswers);
@@ -71,6 +72,23 @@ beforeAll(async () => {
           usage: { input_tokens: 3, output_tokens: 2 },
         }),
       );
+      return;
+    }
+    if (upstreamMode === "slow") {
+      let finished = false;
+      const closedEarly = () => {
+        if (!finished) upstreamClosedEarly = true;
+      };
+      req.on("close", closedEarly);
+      res.on("close", closedEarly);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(ANTHROPIC_SSE[0]!);
+      for (let i = 0; i < 40 && !res.destroyed; i += 1) {
+        await new Promise((r) => setTimeout(r, 25));
+        if (!res.destroyed) res.write('event: ping\ndata: {"type":"ping"}\n\n');
+      }
+      finished = true;
+      if (!res.destroyed) res.end();
       return;
     }
     res.writeHead(200, {
@@ -117,6 +135,7 @@ const reset = () => {
   captured = [];
   records = [];
   upstreamMode = "sse";
+  upstreamClosedEarly = false;
 };
 
 const anthropicBody = (model = "claude-code/auto", extra: Record<string, unknown> = {}) => ({
@@ -253,15 +272,29 @@ describe("relay: anthropic messages", () => {
     expect(records).toHaveLength(0);
   });
 
-  test("count_tokens is forwarded", async () => {
+  test("count_tokens never routes, never logs, and uses the session's current model", async () => {
     reset();
-    const res = await fetch(`${daemon.url}/v1/messages/count_tokens`, {
+    const before = judge.requests.length;
+    const turnBefore = daemon.store.get("cc:sess-1")?.turn;
+    const onSession = await fetch(`${daemon.url}/v1/messages/count_tokens`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-claude-code-session-id": "sess-1" },
       body: JSON.stringify({ model: "claude-code/auto", messages: [] }),
     });
-    expect(res.status).toBe(200);
+    expect(onSession.status).toBe(200);
     expect(captured[0]!.path).toBe("/v1/messages/count_tokens");
+    expect((captured[0]!.body as { model: string }).model).toBe("anthropic/claude-sonnet-5");
+    const fresh = await fetch(`${daemon.url}/v1/messages/count_tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-claude-code-session-id": "never-seen" },
+      body: JSON.stringify({ model: "claude-code/auto", messages: [] }),
+    });
+    expect(fresh.status).toBe(200);
+    expect((captured[1]!.body as { model: string }).model).toBe("openai/gpt-5.4-mini");
+    expect(judge.requests.length).toBe(before);
+    expect(records).toHaveLength(0);
+    expect(daemon.store.get("cc:sess-1")?.turn).toBe(turnBefore);
+    expect(daemon.store.get("cc:never-seen")).toBeUndefined();
   });
 });
 
@@ -400,6 +433,60 @@ describe("native hook ingest", () => {
   });
 });
 
+describe("client cancellation", () => {
+  test("aborting the client mid-stream aborts the upstream and logs the interruption once", async () => {
+    reset();
+    upstreamMode = "slow";
+    const ctrl = new AbortController();
+    const res = await fetch(`${daemon.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-claude-code-session-id": "abort-1" },
+      body: JSON.stringify(anthropicBody()),
+      signal: ctrl.signal,
+    });
+    const reader = res.body!.getReader();
+    await reader.read();
+    ctrl.abort();
+    for (let i = 0; i < 40 && records.length === 0; i += 1) await new Promise((r) => setTimeout(r, 25));
+    expect(upstreamClosedEarly).toBe(true);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.apply).toMatchObject({ ok: false, error: "client disconnected" });
+  });
+});
+
+describe("log callback failures", () => {
+  test("a throwing log callback neither breaks the response nor commits twice", async () => {
+    let attempts = 0;
+    const raw = minimalPolicy();
+    raw.egress = { openrouter: { base_url: upstreamUrl, api_key_env: "TEST_UPSTREAM_KEY" } };
+    for (const c of Object.values(raw.candidates)) c.via = "openrouter";
+    const d = await startDaemon({
+      policy: loadPolicy(raw),
+      judge,
+      env: { TEST_UPSTREAM_KEY: "k" },
+      port: 0,
+      log: () => {
+        attempts += 1;
+        throw new Error("sink down");
+      },
+    });
+    try {
+      upstreamMode = "sse";
+      const res = await fetch(`${d.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-claude-code-session-id": "log-1" },
+        body: JSON.stringify(anthropicBody("auto")),
+      });
+      const text = await res.text();
+      expect(res.status).toBe(200);
+      expect(text.endsWith('event: message_stop\ndata: {"type":"message_stop"}\n\n')).toBe(true);
+      expect(attempts).toBe(1);
+    } finally {
+      await d.close();
+    }
+  });
+});
+
 describe("token gate", () => {
   test("a non-loopback bind without a token is refused, and a token guards every endpoint but health", async () => {
     await expect(startDaemon({ policy: loadPolicy(minimalPolicy()), port: 0, host: "0.0.0.0" })).rejects.toThrow(/token/);
@@ -409,6 +496,8 @@ describe("token gate", () => {
       expect((await fetch(`${guarded.url}/v1/models`)).status).toBe(401);
       expect((await fetch(`${guarded.url}/v1/models`, { headers: { authorization: "Bearer s3cret" } })).status).toBe(200);
       expect((await fetch(`${guarded.url}/v1/models`, { headers: { "x-api-key": "s3cret" } })).status).toBe(200);
+      expect((await fetch(`${guarded.url}/api/hello`, { method: "HEAD" })).status).toBe(200);
+      expect((await fetch(`${guarded.url}/v1/models`, { headers: { authorization: "Bearer s3cre" } })).status).toBe(401);
     } finally {
       await guarded.close();
     }

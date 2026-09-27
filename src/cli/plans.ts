@@ -5,6 +5,8 @@
 
 export interface SetupTarget {
   readonly baseUrl: string;
+  /** Relay token when the daemon runs with --token; written as the harness credential. */
+  readonly token?: string;
   /** Absolute command used by command hooks, for example "/usr/local/bin/jev-router". */
   readonly hookCommand: string;
 }
@@ -60,7 +62,7 @@ export function planClaudeCodeSettings(existing: unknown, target: SetupTarget): 
   settings.env = {
     ...env,
     ANTHROPIC_BASE_URL: target.baseUrl,
-    ANTHROPIC_AUTH_TOKEN: env.ANTHROPIC_AUTH_TOKEN ?? "jev-router",
+    ANTHROPIC_AUTH_TOKEN: target.token ?? env.ANTHROPIC_AUTH_TOKEN ?? "jev-router",
     ANTHROPIC_API_KEY: "",
     ANTHROPIC_MODEL: "claude-code/auto",
     CLAUDE_CODE_GATEWAY_HINT_HEADERS: "1",
@@ -119,7 +121,7 @@ export function planOpenCodeConfig(existing: unknown, target: SetupTarget): Json
   provider["jev-router"] = {
     npm: "@ai-sdk/openai-compatible",
     name: "jev-router",
-    options: { baseURL: `${target.baseUrl}/v1`, apiKey: "jev-router" },
+    options: { baseURL: `${target.baseUrl}/v1`, apiKey: target.token ?? "jev-router" },
     models: { auto: { name: "jev-router auto", limit: { context: 200000, output: 65536 } } },
   };
   config.provider = provider;

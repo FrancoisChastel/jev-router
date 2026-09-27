@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { startDaemon } from "../daemon/server";
+import type { FetchLike } from "../judge/http";
 import { replay } from "../measure/replay";
 import { parseLog, summarize } from "../measure/stats";
 import { createJudge } from "../runtime/judge-factory";
@@ -18,7 +19,7 @@ const USAGE = `jev-router <command>
   stats [--log <path>]                  cost and routing summary of the decision log, against every baseline
   replay --policy <file> [--log <path>] [--policy-id default]
                                         re-decide the log under another policy using recorded judge answers
-  setup [--agent <name>]... [--dry-run] [--port 4141]
+  setup [--agent <name>]... [--dry-run] [--port 4141] [--token <secret>]
                                         point installed harnesses at the relay and install their hook packs
                                         agents: claude-code, codex, opencode, pi (default: all)
   hook <claude-code|codex>              forward a native hook payload from stdin to the relay (used by hook packs)
@@ -94,36 +95,48 @@ async function setup(args: readonly string[]): Promise<void> {
   if (unknown.length > 0) throw new Error(`unknown agent(s): ${unknown.join(", ")}; expected ${AGENTS.join(", ")}`);
   const agents = (requested.length > 0 ? requested : AGENTS) as readonly Agent[];
   const port = Number(flag(args, "--port") ?? 4141);
+  const setupToken = flag(args, "--token") ?? process.env.JEV_ROUTER_TOKEN;
   const examplePolicy = new URL("../../examples/policy.json", import.meta.url).pathname;
   await runSetup({
     agents,
     baseUrl: `http://127.0.0.1:${port}`,
     hookCommand: process.argv[1] ? `${process.execPath} ${process.argv[1]}` : "jev-router",
     dryRun: args.includes("--dry-run"),
+    ...(setupToken ? { token: setupToken } : {}),
     examplePolicyPath: examplePolicy,
     openCodePluginPath: new URL("../adapters/opencode/plugin.js", import.meta.url).pathname,
     log: (line) => console.log(line),
   });
 }
 
-/** Forward a native hook payload to the relay. Never fails the harness: errors go to stderr and the exit code stays 0. */
+/** Forward a native hook payload to the relay. Returns the hook output; never throws so the harness is never blocked. */
+export async function forwardHook(
+  harness: string,
+  payload: string,
+  opts: { readonly port?: string; readonly token?: string; readonly fetch?: FetchLike; readonly warn?: (m: string) => void } = {},
+): Promise<string> {
+  const port = opts.port ?? process.env.JEV_ROUTER_PORT ?? "4141";
+  const fetchImpl = opts.fetch ?? fetch;
+  try {
+    await fetchImpl(`http://127.0.0.1:${port}/hooks/${harness}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}) },
+      body: payload || "{}",
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch (e) {
+    (opts.warn ?? console.error)(`jev-router hook: relay unreachable (${e instanceof Error ? e.message : String(e)})`);
+  }
+  return "{}";
+}
+
 async function hook(args: readonly string[]): Promise<void> {
   const harness = args[0];
   if (harness !== "claude-code" && harness !== "codex") throw new Error("hook needs a harness: claude-code or codex");
   const chunks: Buffer[] = [];
   for await (const c of process.stdin) chunks.push(c as Buffer);
-  const port = process.env.JEV_ROUTER_PORT ?? "4141";
-  try {
-    await fetch(`http://127.0.0.1:${port}/hooks/${harness}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: Buffer.concat(chunks).toString("utf8") || "{}",
-      signal: AbortSignal.timeout(2000),
-    });
-  } catch (e) {
-    console.error(`jev-router hook: relay unreachable (${e instanceof Error ? e.message : String(e)})`);
-  }
-  console.log("{}");
+  const token = process.env.JEV_ROUTER_TOKEN;
+  console.log(await forwardHook(harness, Buffer.concat(chunks).toString("utf8"), token ? { token } : {}));
 }
 
 const usd = (n: number): string => `$${n.toFixed(4)}`;

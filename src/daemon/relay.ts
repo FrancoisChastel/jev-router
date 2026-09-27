@@ -53,6 +53,8 @@ function egressFor(policy: Policy, candidate: Candidate | undefined): { readonly
 export interface RelayRequest {
   /** Token counting must never route, log, or advance a session; it only needs a real model id. */
   readonly countTokens?: boolean;
+  /** Aborts when the client connection closes before the response finished. */
+  readonly clientGone?: AbortSignal;
   readonly req: IncomingMessage;
   readonly res: ServerResponse;
   readonly headers: Headers;
@@ -161,10 +163,21 @@ async function forward(
   body: JsonObject,
   opts: ForwardOptions,
 ): Promise<void> {
+  /** Never let a throwing log or store callback break the response path, and never call it twice. */
+  let called = false;
+  const done = (ok: boolean, usage: TokenUsage | undefined, error?: string) => {
+    if (called) return;
+    called = true;
+    try {
+      opts.onDone?.(ok, usage, error);
+    } catch (e) {
+      console.error(`jev-router: onDone callback failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
   const apiKey = target.egress.api_key_env ? deps.env[target.egress.api_key_env] : undefined;
   const forwardAuth = target.egress.forward_auth === true;
   if (!forwardAuth && !apiKey) {
-    opts.onDone?.(false, undefined, `egress '${target.name}' has no API key in $${target.egress.api_key_env ?? "(unset)"}`);
+    done(false, undefined, `egress '${target.name}' has no API key in $${target.egress.api_key_env ?? "(unset)"}`);
     sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, `egress '${target.name}' has no API key configured`));
     return;
   }
@@ -172,9 +185,12 @@ async function forward(
   const headers = upstreamHeaders(r.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: r.dialect.dialect });
   const abort = new AbortController();
   let finished = false;
-  r.req.on("close", () => {
+  const onClientGone = () => {
     if (!finished) abort.abort();
-  });
+  };
+  if (r.clientGone?.aborted) onClientGone();
+  r.clientGone?.addEventListener("abort", onClientGone, { once: true });
+  const clientDisconnected = () => r.clientGone?.aborted === true;
 
   let upstream: Response;
   try {
@@ -182,7 +198,7 @@ async function forward(
   } catch (e) {
     finished = true;
     const message = e instanceof Error ? e.message : String(e);
-    opts.onDone?.(false, undefined, `upstream unreachable: ${message}`);
+    done(false, undefined, `upstream unreachable: ${message}`);
     if (!r.res.headersSent) sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, `upstream unreachable: ${message}`));
     return;
   }
@@ -193,10 +209,7 @@ async function forward(
   r.res.setHeader("x-jev-router-egress", target.name);
   for (const [k, v] of Object.entries(opts.extraHeaders ?? {})) r.res.setHeader(k, v);
 
-  const requestedModel =
-    typeof body.model === "string" && opts.source !== "passthrough"
-      ? r.dialect.normalize(JSON.parse(r.rawBody) as JsonObject).requestedModel || String(body.model)
-      : undefined;
+  const requestedModel = opts.requestedModel;
   const contentType = upstream.headers.get("content-type") ?? "";
 
   if (!upstream.ok || !upstream.body) {
@@ -204,7 +217,7 @@ async function forward(
     r.res.setHeader("content-length", Buffer.byteLength(text));
     r.res.end(text);
     finished = true;
-    opts.onDone?.(false, undefined, `upstream responded ${upstream.status}`);
+    done(false, undefined, `upstream responded ${upstream.status}`);
     return;
   }
 
@@ -221,16 +234,16 @@ async function forward(
         )
       : upstream.body;
     r.res.flushHeaders();
+    let streamError: string | undefined;
     try {
       for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) r.res.write(chunk);
       r.res.end();
-      finished = true;
-      opts.onDone?.(true, usage);
     } catch (e) {
-      finished = true;
+      streamError = clientDisconnected() ? "client disconnected" : `stream interrupted: ${e instanceof Error ? e.message : String(e)}`;
       r.res.destroy();
-      opts.onDone?.(false, usage, `stream interrupted: ${e instanceof Error ? e.message : String(e)}`);
     }
+    finished = true;
+    done(streamError === undefined, usage, streamError);
     return;
   }
 
@@ -247,5 +260,5 @@ async function forward(
   }
   r.res.setHeader("content-length", Buffer.byteLength(out));
   r.res.end(out);
-  opts.onDone?.(true, usage);
+  done(true, usage);
 }

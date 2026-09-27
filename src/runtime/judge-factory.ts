@@ -6,7 +6,7 @@ import type { Env } from "./paths";
 const DEFAULT_KEY_ENV = { openrouter: "OPENROUTER_API_KEY", vercel: "AI_GATEWAY_API_KEY", typesafe: "TYPESAFE_API_KEY" } as const;
 
 export interface JudgeFactoryOptions {
-  readonly fetch?: typeof fetch;
+  readonly fetch?: FetchLike;
 }
 
 /**

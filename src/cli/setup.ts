@@ -11,6 +11,7 @@ export interface SetupOptions {
   readonly agents: readonly Agent[];
   readonly baseUrl: string;
   readonly hookCommand: string;
+  readonly token?: string;
   readonly dryRun: boolean;
   readonly home?: string;
   readonly examplePolicyPath?: string;
@@ -59,7 +60,7 @@ const json = (v: JsonObject): string => `${JSON.stringify(v, null, 2)}\n`;
 
 export async function runSetup(opts: SetupOptions): Promise<void> {
   const home = opts.home ?? homedir();
-  const target: SetupTarget = { baseUrl: opts.baseUrl, hookCommand: opts.hookCommand };
+  const target: SetupTarget = { baseUrl: opts.baseUrl, hookCommand: opts.hookCommand, ...(opts.token ? { token: opts.token } : {}) };
 
   const policyPath = await resolvePolicyPath();
   if ((await readText(policyPath)) === undefined && opts.examplePolicyPath) {
@@ -80,7 +81,11 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
       await writeWithBackup(config, planCodexConfig((await readText(config)) ?? "", target), opts);
       const hooks = join(home, ".codex", "hooks.json");
       await writeWithBackup(hooks, json(planCodexHooks(await readJson(hooks), target)), opts);
-      opts.log("  export JEV_ROUTER_TOKEN=anything before starting Codex; the relay ignores its value");
+      opts.log(
+        opts.token
+          ? "  export JEV_ROUTER_TOKEN=<the relay token> before starting Codex"
+          : "  export JEV_ROUTER_TOKEN=anything before starting Codex; the relay ignores its value",
+      );
     } else if (agent === "opencode") {
       const path = join(home, ".config", "opencode", "opencode.json");
       await writeWithBackup(path, json(planOpenCodeConfig(await readJson(path), target)), opts);

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Policy } from "../core/policy/types";
 import type { DecisionRecord } from "../core/record";
@@ -34,9 +35,15 @@ export interface DaemonOptions {
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
+function sameSecret(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
 function presentsToken(headers: Readonly<Record<string, string | undefined>>, token: string): boolean {
   const auth = headers.authorization ?? "";
-  return auth === `Bearer ${token}` || headers["x-api-key"] === token;
+  return sameSecret(auth, `Bearer ${token}`) || sameSecret(headers["x-api-key"] ?? "", token);
 }
 
 export interface RunningDaemon {
@@ -93,6 +100,7 @@ function bodyFromDecidePayload(raw: JsonObject): NormalizedBody {
         ...(typeof o.excerpt === "string" ? { excerpt: o.excerpt.slice(-200) } : {}),
       }))
     : [];
+  const effort = asEffort(r.requestedEffort);
   return {
     requestedModel: typeof r.requestedModel === "string" ? r.requestedModel : "auto",
     isNewUserTurn: r.isNewUserTurn !== false,
@@ -101,7 +109,7 @@ function bodyFromDecidePayload(raw: JsonObject): NormalizedBody {
     toolNames: Array.isArray(r.toolNames) ? r.toolNames.filter((t): t is string => typeof t === "string") : [],
     hasImages: r.hasImages === true,
     toolOutcomes: outcomes,
-    ...(asEffort(r.requestedEffort) ? { requestedEffort: asEffort(r.requestedEffort) as NonNullable<ReturnType<typeof asEffort>> } : {}),
+    ...(effort ? { requestedEffort: effort } : {}),
     stream: false,
     prefixDigestInput: "",
   };
@@ -128,7 +136,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     const method = req.method ?? "GET";
     const headers = flattenHeaders(req);
 
-    if (opts.token && path !== "/healthz" && !presentsToken(headers, opts.token)) {
+    const isProbe = method === "HEAD" && path === "/api/hello";
+    if (opts.token && path !== "/healthz" && !isProbe && !presentsToken(headers, opts.token)) {
       sendJson(res, 401, errorBody(dialectForPath(path)?.dialect, 401, "jev-router: missing or invalid token"));
       return;
     }
@@ -147,6 +156,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     }
 
     if (method === "POST") {
+      // Wired before the body is drained: a close listener added afterwards never fires on an ended request.
+      // Bun's node:http emits close on the request only; Node emits it on both. Listen on the request.
+      const clientGone = new AbortController();
+      req.on("close", () => {
+        if (!res.writableFinished) clientGone.abort();
+      });
       let raw: string;
       try {
         raw = await readJsonBody(req, maxBody);
@@ -157,11 +172,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
 
       const dialect = dialectForPath(path);
       if (dialect) {
-        await relay(relayDeps, { req, res, headers, dialect, path, query: url.search, rawBody: raw });
+        await relay(relayDeps, { req, res, headers, dialect, path, query: url.search, rawBody: raw, clientGone: clientGone.signal });
         return;
       }
       if (path === "/v1/messages/count_tokens") {
         await relay(relayDeps, {
+          countTokens: true,
           req,
           res,
           headers,
@@ -169,6 +185,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           path,
           query: url.search,
           rawBody: raw === "" ? "{}" : raw,
+          clientGone: clientGone.signal,
         });
         return;
       }
