@@ -12,7 +12,8 @@
 #      BENCH_FORCE_BUILD (0|1; default 1 when the Docker daemon is not amd64, so task images are rebuilt natively from their
 #      Dockerfile instead of running the amd64 images under emulation, where the verifier's Python segfaults),
 #      BENCH_HARBOR_ARGS (extra words appended to `harbor run`), BENCH_ATTEMPTS (attempts per task; when > 1 the job and
-#      the decision log are named <config>-k<N> so repeated runs sit next to single-attempt ones).
+#      the decision log are named <config>-k<N> so repeated runs sit next to single-attempt ones), BENCH_RUN_NAME (overrides
+#      that job and log name, for example to run `routed` under JEV_ROUTER_POLICY=policy-tuned.json as routed-tuned-k3).
 set -euo pipefail
 
 CONFIG=${1:?config required: routed | fast | mid | frontier}
@@ -34,6 +35,7 @@ export JEV_ROUTER_HOME=${JEV_ROUTER_HOME:-$BENCH_DIR/home}
 BENCH_ATTEMPTS=${BENCH_ATTEMPTS:-1}
 RUN_NAME=$CONFIG
 [ "$BENCH_ATTEMPTS" -gt 1 ] && RUN_NAME="$CONFIG-k$BENCH_ATTEMPTS"
+RUN_NAME=${BENCH_RUN_NAME:-$RUN_NAME}
 export JEV_ROUTER_LOG="$BENCH_DIR/$RUN_NAME.jsonl"
 mkdir -p "$BENCH_DIR/jobs" "$JEV_ROUTER_HOME"
 
