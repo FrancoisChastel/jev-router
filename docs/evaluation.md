@@ -6,7 +6,7 @@ No savings claim without this. `stats` and `replay` tell you what routing did to
 
 - Python 3.12 or later, [uv](https://docs.astral.sh/uv/), Docker, and Harbor: `uv tool install --upgrade harbor`
 - A gateway key for the egress in your policy, for example `OPENROUTER_API_KEY`, and the same or another key for the judge
-- The relay: `bun run build` in this repo, or `npm i -g @francoischastel/jev-router`
+- The relay: `bun run build` in this repo, or `npm i -g @french-castle/jev-router`
 
 ## Make the relay reachable from the sandbox
 

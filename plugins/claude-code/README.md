@@ -7,7 +7,7 @@ claude plugin marketplace add FrancoisChastel/jev-router
 claude plugin install jev-router@jev-router
 ```
 
-Then point Claude Code at the relay, either with `npx @francoischastel/jev-router setup --agent claude-code` or by hand:
+Then point Claude Code at the relay, either with `npx @french-castle/jev-router setup --agent claude-code` or by hand:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:4141

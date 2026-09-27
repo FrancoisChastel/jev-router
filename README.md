@@ -1,7 +1,7 @@
 # jev-router
 
 [![CI](https://github.com/FrancoisChastel/jev-router/actions/workflows/ci.yml/badge.svg)](https://github.com/FrancoisChastel/jev-router/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@francoischastel/jev-router)](https://www.npmjs.com/package/@francoischastel/jev-router)
+[![npm](https://img.shields.io/npm/v/@french-castle/jev-router)](https://www.npmjs.com/package/@french-castle/jev-router)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 Route every turn of your coding agent to the cheapest model that can finish it.
@@ -16,7 +16,7 @@ jev-router sits between Claude Code, Codex, OpenCode, or Pi and your model gatew
 ## Quick start
 
 ```bash
-npm install -g @francoischastel/jev-router
+npm install -g @french-castle/jev-router
 export OPENROUTER_API_KEY=sk-or-...    # or AI_GATEWAY_API_KEY for Vercel AI Gateway
 
 jev-router init      # writes ~/.jev-router/policy.json from your key, with live prices
@@ -25,7 +25,7 @@ jev-router setup     # points your installed harnesses at the relay (preview wit
 jev-router up        # start the relay and leave it running
 ```
 
-Prefer not to install globally? `npx @francoischastel/jev-router up` works for every command, and `up` creates the policy itself when none exists.
+Prefer not to install globally? `npx @french-castle/jev-router up` works for every command, and `up` creates the policy itself when none exists.
 
 Then use your harness as usual. In Claude Code pick `claude-code/auto` under `/model`; Codex and OpenCode are configured to use the `auto` model by `setup`; Pi runs the extension in-process.
 
@@ -82,8 +82,8 @@ None of this is a benchmark. [docs/evaluation.md](./docs/evaluation.md) is the r
 ## Library
 
 ```ts
-import { plan, loadPolicy, emptySession } from "@francoischastel/jev-router/core";
-import { HttpJudge } from "@francoischastel/jev-router/judge";
+import { plan, loadPolicy, emptySession } from "@french-castle/jev-router/core";
+import { HttpJudge } from "@french-castle/jev-router/judge";
 
 const policy = loadPolicy(JSON.parse(await readFile("policy.json", "utf8")));
 const judge = new HttpJudge({ transport: "openrouter", apiKey: process.env.OPENROUTER_API_KEY! });

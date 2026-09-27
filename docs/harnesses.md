@@ -70,7 +70,7 @@ Pi exposes its model and thinking level to extensions, so the router runs inside
 ```bash
 export OPENROUTER_API_KEY=sk-or-...   # or AI_GATEWAY_API_KEY, or TYPESAFE_API_KEY; Pi needs no egress
 jev-router init
-pi install npm:@francoischastel/jev-router
+pi install npm:@french-castle/jev-router
 ```
 
 Candidates are looked up in Pi's own registry by provider and id. `via: openrouter` maps to Pi's `openrouter` provider and `via: vercel` to `vercel-ai-gateway`; set `pi.provider` or `pi.model` on a candidate to override. `/jev-router status`, `/jev-router off`, and `/jev-router on` control it, and a manual `/model` pick pauses routing until `/jev-router on`.

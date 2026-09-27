@@ -29,7 +29,7 @@ jobs:
           npm pack --silent
           mkdir -p /tmp/pkgtest && cd /tmp/pkgtest
           npm init -y >/dev/null
-          npm install --silent "$GITHUB_WORKSPACE"/francoischastel-jev-router-*.tgz
-          node -e "import('@francoischastel/jev-router/core').then(m => { if (typeof m.plan !== 'function') throw new Error('core export missing'); })"
+          npm install --silent "$GITHUB_WORKSPACE"/french-castle-jev-router-*.tgz
+          node -e "import('@french-castle/jev-router/core').then(m => { if (typeof m.plan !== 'function') throw new Error('core export missing'); })"
           npx jev-router help >/dev/null
           JEV_ROUTER_HOME=/tmp/pkgtest/home npx jev-router init | grep -q 'policy: wrote'
