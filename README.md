@@ -65,12 +65,12 @@ Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the 
 
 | Harness | How routing is applied | What the harness tells the router |
 |---|---|---|
-| Claude Code | Local relay via `ANTHROPIC_BASE_URL` | Plugin hooks report tool successes and failures, compaction, subagents, API errors; gateway hint headers carry request class |
-| Codex | Local relay as a Responses-API model provider | Hooks report tool results, compaction, prompts |
+| Claude Code | Local relay via `ANTHROPIC_BASE_URL`, on your claude.ai login or a gateway key | Plugin hooks report tool successes and failures, compaction, subagents, API errors; gateway hint headers carry request class |
+| Codex | Local relay as a Responses-API model provider, on your ChatGPT login or a gateway key | Hooks report tool results, compaction, prompts |
 | OpenCode | Local relay as an OpenAI-compatible provider | Plugin tags requests with the session and reports tool results, compaction, API errors |
 | Pi | In-process extension, no relay | Everything: prompts, tool results, compaction, model changes |
 
-`jev-router setup` configures all four and backs up every file it touches. [docs/harnesses.md](./docs/harnesses.md) has the manual steps and the Claude Code marketplace install.
+`jev-router setup` configures whichever of the four are installed, backs up every file it touches, and keeps the relay running as a background service. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
 
 ## Measure before believing
 
@@ -99,7 +99,7 @@ const { decision } = outcome.kind === "decision" ? outcome : outcome.conclude((a
 
 ## Status and limits
 
-Early. The mechanics have been verified live against OpenRouter: real judge decisions, and Anthropic streaming, OpenAI chat, and Responses requests routed and echoed correctly. What has not been done: the benchmark that would justify a savings claim, live runs against Vercel and TypeSafe, and the AI SDK middleware. Run the relay with Node; under Bun a client cancellation does not propagate to the upstream. The relay binds to localhost; binding wider requires `--token`.
+Early. The mechanics have been verified live against OpenRouter, and against Claude Code's and Codex's own logins: real judge decisions, and Anthropic streaming, OpenAI chat, and Responses requests routed and echoed correctly. What has not been done: the benchmark that would justify a savings claim, live runs against Vercel and TypeSafe, and the AI SDK middleware. Run the relay with Node; under Bun a client cancellation does not propagate to the upstream. The relay binds to localhost; binding wider requires `--token`, and a `--token` bind cannot forward a harness's own login, so plan-backed routing stays on loopback.
 
 ## Documentation
 
