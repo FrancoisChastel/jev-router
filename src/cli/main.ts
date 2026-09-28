@@ -1,4 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { promisify } from "node:util";
 import type { JudgeTransport } from "../core/policy/types";
 import { taskPhaseQuestions } from "../core/questions";
 import { startDaemon } from "../daemon/server";
@@ -6,16 +11,20 @@ import type { FetchLike } from "../judge/http";
 import { replay } from "../measure/replay";
 import { parseLog, summarize } from "../measure/stats";
 import type { EgressName } from "../runtime/defaults";
+import { applyEnv, envFilePath, formatEnvFile, loadEnvFile } from "../runtime/envfile";
 import { describeDetection, initPolicy } from "../runtime/init";
 import { createJudge } from "../runtime/judge-factory";
 import { JsonlLogger } from "../runtime/log";
-import { decisionsLogPath, resolvePolicyPath } from "../runtime/paths";
+import { configDir, decisionsLogPath, resolvePolicyPath } from "../runtime/paths";
 import { readPolicyFile } from "../runtime/policy-file";
+import { defaultProbe, detectAgents } from "./detect-agents";
+import { claudeCodeBehavesAs, harnessAuth } from "./plans";
+import { installService, type ServiceDeps, type ServiceSpec, serviceState, uninstallService } from "./service";
 import { AGENTS, type Agent, runSetup } from "./setup";
 
 const USAGE = `jev-router <command>
 
-  init [--force] [--judge openrouter|vercel|typesafe] [--egress openrouter|vercel]
+  init [--force] [--judge openrouter|vercel|typesafe] [--egress openrouter|vercel] [--no-subscriptions]
                                         write ~/.jev-router/policy.json from the keys in your environment
                                         (OPENROUTER_API_KEY, AI_GATEWAY_API_KEY, TYPESAFE_API_KEY) with live prices
   ping                                  ask the judge one question and report latency and cost
@@ -26,16 +35,132 @@ const USAGE = `jev-router <command>
   stats [--log <path>]                  cost and routing summary of the decision log, against every baseline
   replay --policy <file> [--log <path>] [--policy-id default]
                                         re-decide the log under another policy using recorded judge answers
-  setup [--agent <name>]... [--dry-run] [--port 4141] [--token <secret>]
-                                        point installed harnesses at the relay and install their hook packs
-                                        agents: claude-code, codex, opencode, pi (default: all)
+  setup [--judge-key <key>] [--agent <name>]... [--no-service] [--no-prompt] [--dry-run] [--port 4141] [--token <secret>]
+                                        one command: take the judge key (asked for once, stored in ~/.jev-router/env),
+                                        detect your Claude Code and Codex logins and installed harnesses, write the
+                                        policy, point each harness at the relay, install the relay as a background
+                                        service, and check it answers. agents: claude-code, codex, opencode, pi
+  service install|uninstall|status [--port 4141]
+                                        manage the background relay (launchd on macOS, systemd --user on Linux)
   hook <claude-code|codex>              forward a native hook payload from stdin to the relay (used by hook packs)
   policy                                validate the policy file and print where it was read from
   version | --version
   help
 
-Environment: JEV_ROUTER_HOME, JEV_ROUTER_POLICY, JEV_ROUTER_LOG, and the judge key named by the policy.
+Environment: JEV_ROUTER_HOME, JEV_ROUTER_POLICY, JEV_ROUTER_LOG, and the judge key named by the policy
+(read from the environment, else from ~/.jev-router/env).
 `;
+
+const JUDGE_KEY_ENVS = ["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "TYPESAFE_API_KEY"] as const;
+
+/** Which environment variable a pasted judge key belongs in, from an explicit transport or the key's prefix. */
+export function judgeKeyEnv(key: string, judge?: string): string {
+  if (judge === "openrouter") return "OPENROUTER_API_KEY";
+  if (judge === "vercel") return "AI_GATEWAY_API_KEY";
+  if (judge === "typesafe") return "TYPESAFE_API_KEY";
+  if (judge) throw new Error(`unknown --judge ${judge}; expected openrouter, vercel, or typesafe`);
+  if (key.startsWith("sk-or-")) return "OPENROUTER_API_KEY";
+  if (key.startsWith("vck_")) return "AI_GATEWAY_API_KEY";
+  throw new Error("cannot tell which provider this key belongs to; add --judge openrouter|vercel|typesafe");
+}
+
+async function saveJudgeKey(envName: string, key: string): Promise<string> {
+  const path = envFilePath(process.env);
+  const vars = { ...(await loadEnvFile(path)), [envName]: key };
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, formatEnvFile(vars), { mode: 0o600 });
+  await chmod(path, 0o600);
+  process.env[envName] = key;
+  return path;
+}
+
+async function askForKey(): Promise<string | undefined> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return undefined;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(
+      "Judge key (OpenRouter sk-or-... or Vercel AI Gateway vck_...): it pays for jev, about $0.00003 a decision. Enter to skip: ",
+    );
+    return answer.trim() || undefined;
+  } finally {
+    rl.close();
+  }
+}
+
+const execFileAsync = promisify(execFile);
+
+function realServiceDeps(): ServiceDeps {
+  return {
+    platform: process.platform,
+    homeDir: homedir(),
+    uid: typeof process.getuid === "function" ? process.getuid() : 0,
+    run: async (command, args) => {
+      try {
+        const r = await execFileAsync(command, [...args], { encoding: "utf8" });
+        return { code: 0, stdout: r.stdout, stderr: r.stderr };
+      } catch (e) {
+        const err = e as { code?: number | string; stdout?: string; stderr?: string; message?: string };
+        return { code: typeof err.code === "number" ? err.code : 1, stdout: err.stdout ?? "", stderr: err.stderr ?? err.message ?? "" };
+      }
+    },
+    writeFile: async (path, content) => {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, content);
+    },
+    removeFile: (path) => rm(path, { force: true }),
+  };
+}
+
+function serviceSpec(port: number): ServiceSpec {
+  const cliPath = process.argv[1] ?? "";
+  const env: Record<string, string> = { HOME: homedir(), PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin" };
+  if (process.env.JEV_ROUTER_HOME) env.JEV_ROUTER_HOME = process.env.JEV_ROUTER_HOME;
+  return { execPath: process.execPath, cliPath, port, logPath: `${configDir(process.env)}/relay.log`, env };
+}
+
+async function waitHealthy(baseUrl: string, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(1000) });
+      if (r.ok) return true;
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
+}
+
+async function service(args: readonly string[]): Promise<void> {
+  const action = args[0];
+  const port = Number(flag(args, "--port") ?? 4141);
+  const deps = realServiceDeps();
+  if (action === "install") {
+    const r = await installService(serviceSpec(port), deps);
+    console.log(`${r.ok ? "ok" : "failed"}: ${r.detail}${r.path ? ` (${r.path})` : ""}`);
+    if (r.ok)
+      console.log(
+        (await waitHealthy(`http://127.0.0.1:${port}`, 10_000))
+          ? `relay answering on http://127.0.0.1:${port}`
+          : `relay not answering yet; see ${configDir(process.env)}/relay.log`,
+      );
+    if (!r.ok) process.exitCode = 1;
+    return;
+  }
+  if (action === "uninstall") {
+    const r = await uninstallService(deps);
+    console.log(`${r.ok ? "ok" : "failed"}: ${r.detail}`);
+    return;
+  }
+  if (action === "status") {
+    const state = await serviceState(deps);
+    const healthy = await waitHealthy(`http://127.0.0.1:${port}`, 1500);
+    console.log(`service ${state}; relay on http://127.0.0.1:${port} ${healthy ? "answering" : "not answering"}`);
+    return;
+  }
+  throw new Error("service needs install, uninstall, or status");
+}
 
 function flag(args: readonly string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -62,7 +187,7 @@ export function parseUpOptions(args: readonly string[], env: Readonly<Record<str
 async function ensurePolicy(log: (line: string) => void): Promise<string> {
   const policyPath = await resolvePolicyPath();
   const r = await initPolicy({ path: policyPath, log });
-  if (r.written) for (const line of describeDetection(r.detection)) log(`  ${line}`);
+  if (r.written) for (const line of describeDetection(r.detection, r.subscriptions)) log(`  ${line}`);
   return policyPath;
 }
 
@@ -74,9 +199,10 @@ async function init(args: readonly string[]): Promise<void> {
     force: args.includes("--force"),
     ...(judge ? { judge } : {}),
     ...(egress ? { egress } : {}),
+    ...(args.includes("--no-subscriptions") ? { subscriptions: false } : {}),
     log: (l) => console.log(l),
   });
-  for (const line of describeDetection(r.detection)) console.log(`  ${line}`);
+  for (const line of describeDetection(r.detection, r.subscriptions)) console.log(`  ${line}`);
   console.log(`  prices  ${r.pricesFrom}`);
   console.log(
     `  models  ${Object.entries(r.policy.candidates)
@@ -125,7 +251,11 @@ async function up(args: readonly string[]): Promise<void> {
   console.error(`jev-router listening on ${daemon.url}`);
   console.error(`  policy  ${policyPath}`);
   console.error(`  judge   ${policy.judge.transport}${judge ? "" : " (none: deterministic only)"}`);
-  console.error(`  routes  ${policy.routes.map((r) => r.id).join(", ") || "(none)"}`);
+  console.error(`  routes  ${policy.routes.map((r) => `${r.id}${r.harness === "any" ? "" : ` (${r.harness})`}`).join(", ") || "(none)"}`);
+  const forwarded = Object.entries(policy.egress)
+    .filter(([, e]) => e.forward_auth)
+    .map(([n]) => n);
+  if (forwarded.length > 0) console.error(`  logins  forwarded as-is to ${forwarded.join(", ")}; nothing is stored`);
   console.error(`  log     ${decisionsLogPath()}`);
   if (o.shadow) console.error(`  shadow  serving '${o.shadow}' for every routed request; decisions are logged only`);
   if (o.token) console.error("  auth    bearer token required on every endpoint except /healthz");
@@ -150,19 +280,62 @@ async function setup(args: readonly string[]): Promise<void> {
   const requested = args.flatMap((a, i) => (a === "--agent" ? [args[i + 1] ?? ""] : []));
   const unknown = requested.filter((a) => !(AGENTS as readonly string[]).includes(a));
   if (unknown.length > 0) throw new Error(`unknown agent(s): ${unknown.join(", ")}; expected ${AGENTS.join(", ")}`);
-  const agents = (requested.length > 0 ? requested : AGENTS) as readonly Agent[];
   const port = Number(flag(args, "--port") ?? 4141);
+  const dryRun = args.includes("--dry-run");
   const setupToken = flag(args, "--token") ?? process.env.JEV_ROUTER_TOKEN;
-  await ensurePolicy((l) => console.log(l));
+  const log = (line: string) => console.log(line);
+
+  // 1. The judge key, once. Stored in the env file so the background service finds it.
+  const hasJudgeKey = JUDGE_KEY_ENVS.some((k) => process.env[k]);
+  const pasted = flag(args, "--judge-key") ?? (!hasJudgeKey && !args.includes("--no-prompt") ? await askForKey() : undefined);
+  if (pasted) {
+    const envName = judgeKeyEnv(pasted, flag(args, "--judge"));
+    if (dryRun) log(`judge: would store ${envName} in ${envFilePath(process.env)}`);
+    else log(`judge: ${envName} stored in ${await saveJudgeKey(envName, pasted)} (mode 600)`);
+  } else if (!hasJudgeKey) log("judge: no key; routing uses tool signals only until one is added (`jev-router setup --judge-key ...`)");
+
+  // 2. The policy: keys, logins, live prices.
+  const policyPath = await ensurePolicy(log);
+  const policy = await readPolicyFile(policyPath);
+  const auth = { claudeCode: harnessAuth(policy, "claude-code"), codex: harnessAuth(policy, "codex") };
+  const behavesAs = claudeCodeBehavesAs(policy);
+
+  // 3. Every harness that is actually installed, unless told which.
+  const detected = requested.length > 0 ? [] : await detectAgents(defaultProbe(homedir()));
+  const agents = (requested.length > 0 ? requested : detected) as readonly Agent[];
+  if (agents.length === 0) log("harnesses: none of claude-code, codex, opencode, pi found; pass --agent to configure one anyway");
+  else log(`harnesses: ${agents.join(", ")}${requested.length > 0 ? "" : " (installed)"}`);
   await runSetup({
     agents,
     baseUrl: `http://127.0.0.1:${port}`,
     hookCommand: process.argv[1] ? `${process.execPath} ${process.argv[1]}` : "jev-router",
-    dryRun: args.includes("--dry-run"),
+    dryRun,
+    auth,
+    ...(behavesAs ? { behavesAs } : {}),
     ...(setupToken ? { token: setupToken } : {}),
     openCodePluginPath: new URL("../adapters/opencode/plugin.js", import.meta.url).pathname,
-    log: (line) => console.log(line),
+    log,
   });
+
+  // 4. The relay, as a service that outlives this terminal.
+  const baseUrl = `http://127.0.0.1:${port}`;
+  if (dryRun || args.includes("--no-service")) {
+    log(
+      `relay: ${dryRun ? "would install" : "not installing"} the background service; start it with 'jev-router up' (or 'jev-router service install')`,
+    );
+    return;
+  }
+  const r = await installService(serviceSpec(port), realServiceDeps());
+  if (!r.ok) {
+    log(`relay: ${r.detail}`);
+    return;
+  }
+  log(`relay: ${r.detail} (${r.path})`);
+  log(
+    (await waitHealthy(baseUrl, 10_000))
+      ? `relay: answering on ${baseUrl}; you are done`
+      : `relay: not answering yet; check ${configDir(process.env)}/relay.log`,
+  );
 }
 
 /** Forward a native hook payload to the relay. Returns the hook output; never throws so the harness is never blocked. */
@@ -224,6 +397,13 @@ async function stats(args: readonly string[]): Promise<void> {
     console.log(`always ${id.padEnd(12)} ${usd(b.costUsd).padStart(9)} ${usd(b.savingsUsd).padStart(10)} ${pct(b.savingsPct).padStart(7)}`);
   console.log(`by candidate ${JSON.stringify(s.byCandidate)}`);
   console.log(`by source    ${JSON.stringify(s.bySource)}`);
+  const plans = Object.entries(policy.egress)
+    .filter(([, e]) => e.billing === "subscription")
+    .map(([n]) => n);
+  if (plans.length > 0)
+    console.log(
+      `note: ${plans.join(", ")} bill through a plan; their figures are API list-price equivalents, the scale the plan's allowance is consumed on`,
+    );
 }
 
 async function replayCmd(args: readonly string[]): Promise<void> {
@@ -253,11 +433,13 @@ async function version(): Promise<void> {
 
 export async function main(argv: readonly string[]): Promise<void> {
   const [command, ...rest] = argv;
+  applyEnv(process.env, await loadEnvFile(envFilePath(process.env)));
   if (command === "--version" || command === "-v" || command === "version") return version();
   if (command === "init") return init(rest);
   if (command === "ping") return ping();
   if (command === "up") return up(rest);
   if (command === "setup") return setup(rest);
+  if (command === "service") return service(rest);
   if (command === "hook") return hook(rest);
   if (command === "stats") return stats(rest);
   if (command === "replay") return replayCmd(rest);

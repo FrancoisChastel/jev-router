@@ -58,3 +58,45 @@ describe("sse transform", () => {
     expect(out).toBe('data: {"model":"req","x":1}');
   });
 });
+
+describe("responses api events", () => {
+  test("echoes the requested model inside response objects and reports usage from response.completed", async () => {
+    const usages: Record<string, unknown>[] = [];
+    const events = [
+      'event: response.created\ndata: {"type":"response.created","response":{"id":"r","model":"gpt-6-luna","usage":null}}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"id":"r","model":"gpt-6-luna","usage":{"input_tokens":12,"output_tokens":3}}}\n\n',
+    ];
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        for (const e of events) c.enqueue(new TextEncoder().encode(e));
+        c.close();
+      },
+    }).pipeThrough(createSseTransform({ requestedModel: "auto", onUsage: (u) => usages.push(u) }));
+    const text = await new Response(stream).text();
+    expect(text).toContain('"model":"auto"');
+    expect(text).not.toContain("gpt-6-luna");
+    expect(text).toContain('"delta":"ok"');
+    expect(usages).toEqual([{ input_tokens: 12, output_tokens: 3 }]);
+  });
+});
+
+describe("terminal events", () => {
+  test("onTerminal fires for [DONE], message_stop, and response.completed, never for deltas", async () => {
+    const run = async (events: string[]) => {
+      let terminal = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const e of events) c.enqueue(new TextEncoder().encode(e));
+          c.close();
+        },
+      }).pipeThrough(createSseTransform({ requestedModel: "auto", onTerminal: () => terminal++ }));
+      await new Response(stream).text();
+      return terminal;
+    };
+    expect(await run(['data: {"type":"response.output_text.delta","delta":"x"}\n\n'])).toBe(0);
+    expect(await run(['data: {"type":"response.completed","response":{}}\n\n'])).toBe(1);
+    expect(await run(['event: message_stop\ndata: {"type":"message_stop"}\n\n'])).toBe(1);
+    expect(await run(['data: {"choices":[]}\n\ndata: [DONE]\n\n'])).toBe(1);
+  });
+});

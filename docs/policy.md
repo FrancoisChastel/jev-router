@@ -30,7 +30,18 @@ The policy is a JSON file at `~/.jev-router/policy.json` (`JEV_ROUTER_POLICY` ov
 
 ## egress
 
-Named upstreams the relay forwards to. Each has `base_url`, `api_key_env`, optional `forward_auth` (pass the caller's credentials instead of the configured key), and optional `pi_provider` (Pi provider name when it differs from the egress name). Both OpenRouter and Vercel serve the Anthropic, OpenAI chat, and Responses dialects for any model, so the relay never translates formats.
+Named upstreams the relay forwards to. Both OpenRouter and Vercel serve the Anthropic, OpenAI chat, and Responses dialects for any model, so the relay never translates formats.
+
+| Field | Notes |
+|---|---|
+| `base_url` | Upstream root; the request path is appended |
+| `api_key_env` | Environment variable holding the key the relay injects |
+| `forward_auth` | Forward the caller's own `Authorization` / `x-api-key` instead of injecting a key. How Claude Code's and Codex's logins reach their providers |
+| `mount` | Relay path prefix served by this egress, for example `/backend-api/codex`. An inference sub-path (`/responses`, `/chat/completions`, `/messages`) is routed; anything else under it is proxied unchanged, credentials aside. A proxied Codex catalog gains an `auto` entry |
+| `billing` | `usd` (default) or `subscription`. The latter marks prices as API list-price equivalents, the scale a plan's allowance is consumed on; `stats` says so |
+| `pi_provider` | Pi provider name when it differs from the egress name |
+
+`init` writes `anthropic-subscription` (`https://api.anthropic.com`, forward_auth) when Claude Code is logged in and `chatgpt-subscription` (`https://chatgpt.com/backend-api/codex`, mounted, forward_auth) when Codex is.
 
 ## candidates
 
@@ -53,8 +64,8 @@ Client-visible model ids. `auto` is the generic route, and any `<prefix>/auto` m
 
 | Field | Default | Meaning |
 |---|---|---|
-| `default` | required | Candidate used when nothing else applies |
-| `order` | by `price.in` | Tier order for `up`, `at_least`, and escalation |
+| `default` | required | Candidate used when nothing else applies; must be in `order` |
+| `order` | by `price.in` | The candidates this policy may use, cheapest first; the ladder for `up`, `at_least`, and escalation. A subset keeps, say, plan-backed Claude models out of the gateway policy; rule targets must be in it |
 | `min_confidence` | 0.6 | Below this, on any choice or score answer a rule depends on, the current tier is kept |
 | `hold_turns` | 2 | Turns a forced escalation is held |
 | `confidence_threshold` | 0.5 | Ambiguous band for the deterministic tool-signal score. Must be at least 0.462, the value one axis alone can reach |

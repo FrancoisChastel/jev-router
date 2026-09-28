@@ -120,7 +120,8 @@ function validatePolicyDef(
   if (def.order !== undefined) {
     if (!Array.isArray(def.order) || !def.order.every((c) => typeof c === "string" && ids.has(c)))
       fail(`${where}: order must list known candidates`);
-    if (new Set(def.order).size !== candidateIds.length) fail(`${where}: order must list every candidate exactly once`);
+    if (new Set(def.order).size !== def.order.length) fail(`${where}: order must not repeat a candidate`);
+    if (!def.order.includes(def.default)) fail(`${where}: default '${def.default}' must be listed in order`);
     order = [...(def.order as string[])];
   } else {
     order = [...candidateIds].sort(
@@ -159,7 +160,7 @@ function validatePolicyDef(
     const unknown = [...expr.identifiers].filter((name) => !known.has(name));
     if (unknown.length > 0)
       fail(`${rw}: unknown identifier${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}; known: ${[...known].join(", ")}`);
-    return { when: r.when, expr, then: validateAction(r.then, rw, ids) };
+    return { when: r.when, expr, then: validateAction(r.then, rw, new Set(order)) };
   });
 
   const sw = def.switch === undefined ? {} : def.switch;
@@ -229,10 +230,19 @@ export function loadPolicy(input: PolicyInput | unknown): Policy {
         e.base_url !== "" &&
         (e.api_key_env === undefined || typeof e.api_key_env === "string") &&
         (e.pi_provider === undefined || typeof e.pi_provider === "string") &&
-        (e.forward_auth === undefined || typeof e.forward_auth === "boolean");
-      if (!ok) fail(`egress '${name}' needs a base_url string and optional api_key_env / pi_provider strings and forward_auth boolean`);
+        (e.forward_auth === undefined || typeof e.forward_auth === "boolean") &&
+        (e.mount === undefined || (typeof e.mount === "string" && /^\/[^?#\s]*[^/?#\s]$/.test(e.mount))) &&
+        (e.billing === undefined || e.billing === "usd" || e.billing === "subscription");
+      if (!ok)
+        fail(
+          `egress '${name}' needs a base_url string; optional api_key_env / pi_provider strings, forward_auth boolean, mount path such as "/backend-api/codex" (no trailing slash), billing "usd" | "subscription"`,
+        );
       egress[name] = e as unknown as EgressInput;
     }
+    const mounts = Object.values(egress)
+      .map((e) => e.mount)
+      .filter((m): m is string => typeof m === "string");
+    if (new Set(mounts).size !== mounts.length) fail("egress mounts must be distinct");
   }
   return {
     version: 1,

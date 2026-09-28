@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { Policy } from "../core/policy/types";
+import type { EgressInput, Policy } from "../core/policy/types";
 import type { DecisionRecord } from "../core/record";
 import type { Harness, RequestClass, ToolOutcome } from "../core/types";
 import type { FetchLike } from "../judge/http";
@@ -9,7 +9,7 @@ import { DIALECTS } from "./dialects";
 import { asEffort, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
 import { claudeCodeHookToObserve, codexHookToObserve } from "./hooks";
 import { errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
-import { relay } from "./relay";
+import { proxy, relay } from "./relay";
 import { RouterService } from "./service";
 import { type ObserveEvent, SessionStore } from "./session-store";
 
@@ -63,6 +63,46 @@ function dialectForPath(path: string): DialectAdapter | undefined {
   if (path === "/v1/chat/completions") return DIALECTS["openai-chat"];
   if (path === "/v1/responses") return DIALECTS["openai-responses"];
   return undefined;
+}
+
+interface Mount {
+  readonly name: string;
+  readonly egress: EgressInput;
+  readonly subpath: string;
+}
+
+/** The egress whose `mount` prefixes this path, with the remaining sub-path. */
+function findMount(policy: Policy, path: string): Mount | undefined {
+  for (const [name, egress] of Object.entries(policy.egress)) {
+    const m = egress.mount;
+    if (!m) continue;
+    if (path === m || path.startsWith(`${m}/`)) return { name, egress, subpath: path.slice(m.length) || "/" };
+  }
+  return undefined;
+}
+
+function dialectForSubpath(sub: string): DialectAdapter | undefined {
+  if (sub === "/responses" || sub === "/v1/responses") return DIALECTS["openai-responses"];
+  if (sub === "/chat/completions" || sub === "/v1/chat/completions") return DIALECTS["openai-chat"];
+  if (sub === "/messages" || sub === "/v1/messages") return DIALECTS.anthropic;
+  return undefined;
+}
+
+/**
+ * Codex checks the model it is told to use against the catalog its backend returns, so a proxied catalog gains an
+ * `auto` entry cloned from the model the codex policy starts on. Other catalogs pass through untouched.
+ */
+export function withAutoModel(json: JsonObject, policy: Policy): JsonObject {
+  if (!Array.isArray(json.models)) return json;
+  const models = json.models.filter(isObject);
+  if (models.some((m) => m.slug === "auto")) return json;
+  const route = policy.routes.find((r) => r.harness === "codex" && r.id === "auto") ?? policy.routes.find((r) => r.id === "auto");
+  const def = route ? policy.policies[route.policy] : undefined;
+  const slug = def ? policy.candidates[def.default]?.model : undefined;
+  const template = models.find((m) => m.slug === slug) ?? models.find((m) => m.visibility === "list") ?? models[0];
+  if (!template) return json;
+  const auto = { ...template, slug: "auto", display_name: "auto (jev-router)", visibility: "list", priority: 0 };
+  return { ...json, models: [auto, ...json.models] };
 }
 
 function modelsListing(policy: Policy): string {
@@ -155,6 +195,19 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
       return;
     }
 
+    const mounted = findMount(opts.policy, path);
+    if (mounted && method !== "POST") {
+      await proxy(relayDeps, mounted, {
+        res,
+        headers,
+        method,
+        path: mounted.subpath,
+        query: url.search,
+        ...(mounted.subpath === "/models" ? { transformJson: (j: JsonObject) => withAutoModel(j, opts.policy) } : {}),
+      });
+      return;
+    }
+
     if (method === "POST") {
       // Client-disconnect detection. Node emits close on the response when the client goes away mid-stream,
       // with the response unfinished. The request's own close event is not usable: it fires when the body ends.
@@ -171,6 +224,33 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         return;
       }
 
+      if (mounted) {
+        const mountedDialect = dialectForSubpath(mounted.subpath);
+        if (mountedDialect) {
+          await relay(relayDeps, {
+            req,
+            res,
+            headers,
+            dialect: mountedDialect,
+            path: mounted.subpath,
+            query: url.search,
+            rawBody: raw,
+            clientGone: clientGone.signal,
+            egressName: mounted.name,
+          });
+          return;
+        }
+        await proxy(relayDeps, mounted, {
+          res,
+          headers,
+          method,
+          path: mounted.subpath,
+          query: url.search,
+          rawBody: raw,
+          clientGone: clientGone.signal,
+        });
+        return;
+      }
       const dialect = dialectForPath(path);
       if (dialect) {
         await relay(relayDeps, { req, res, headers, dialect, path, query: url.search, rawBody: raw, clientGone: clientGone.signal });

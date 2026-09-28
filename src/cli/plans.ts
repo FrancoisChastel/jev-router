@@ -1,7 +1,11 @@
+import type { Policy } from "../core/policy/types";
+
 /**
  * Pure planners for the installer: each takes the current config contents and returns the new contents.
  * File I/O lives in setup.ts so these stay testable.
  */
+
+export type HarnessAuth = "token" | "subscription";
 
 export interface SetupTarget {
   readonly baseUrl: string;
@@ -9,6 +13,66 @@ export interface SetupTarget {
   readonly token?: string;
   /** Absolute command used by command hooks, for example "/usr/local/bin/jev-router". */
   readonly hookCommand: string;
+  /**
+   * How each harness authenticates to the relay. `subscription`: the harness keeps its own login and the relay forwards
+   * it, so no relay credential is written. `token` (default): the relay credential is written and the relay injects a
+   * gateway key.
+   */
+  readonly auth?: { readonly claudeCode?: HarnessAuth; readonly codex?: HarnessAuth };
+  /** A model this Claude Code version knows, lending its client-side handling to the `claude-code/auto` picker row. */
+  readonly behavesAs?: string;
+}
+
+const AUTO_ROW_MODEL = "claude-code/auto";
+
+/** Anthropic's own id for a candidate model: strips a gateway prefix and turns `opus-5.5` into `opus-5-5`. */
+export function anthropicModelId(model: string): string | undefined {
+  const bare = model.replace(/^anthropic\//, "");
+  if (!bare.startsWith("claude-")) return undefined;
+  return bare.replace(/\.(\d)/g, "-$1");
+}
+
+/** The model `claude-code/auto` should behave as in Claude Code: the claude-code route's starting candidate. */
+export function claudeCodeBehavesAs(policy: Policy): string | undefined {
+  const route =
+    policy.routes.find((r) => r.id === AUTO_ROW_MODEL && r.harness === "claude-code") ??
+    policy.routes.find((r) => r.id === "auto" && r.harness === "claude-code") ??
+    policy.routes.find((r) => r.id === AUTO_ROW_MODEL) ??
+    policy.routes.find((r) => r.id === "auto" && r.harness === "any");
+  const def = route ? policy.policies[route.policy] : undefined;
+  const model = def ? policy.candidates[def.default]?.model : undefined;
+  return model ? anthropicModelId(model) : undefined;
+}
+
+/**
+ * Claude Code learns `claude-code/auto` from a modelPicker row: it shows up in /model with a label, and `behavesAs`
+ * gives it a known model's prompt profile and effort defaults, which also silences the unknown-model warning.
+ * An existing row for the same model is replaced; other rows and picker settings are kept.
+ */
+export function planClaudeCodeModelPicker(existing: unknown, behavesAs: string | undefined): JsonObject {
+  const picker: JsonObject = isObject(existing) ? { ...existing } : {};
+  const options = Array.isArray(picker.options) ? picker.options.filter(isObject) : [];
+  const row: JsonObject = {
+    model: AUTO_ROW_MODEL,
+    label: "auto (jev-router)",
+    description: "jev-router picks the tier for each turn",
+    ...(behavesAs ? { behavesAs } : {}),
+  };
+  return { ...picker, options: [row, ...options.filter((o) => o.model !== AUTO_ROW_MODEL)] };
+}
+
+/** Whether a harness's route ends at an egress that forwards the caller's own credentials. */
+export function harnessAuth(policy: Policy, harness: "claude-code" | "codex"): HarnessAuth {
+  const id = harness === "claude-code" ? "claude-code/auto" : "auto";
+  const route =
+    policy.routes.find((r) => r.id === id && r.harness === harness) ??
+    policy.routes.find((r) => r.id === "auto" && r.harness === harness) ??
+    policy.routes.find((r) => r.id === id && r.harness === "any") ??
+    policy.routes.find((r) => r.id === "auto" && r.harness === "any");
+  const def = route ? policy.policies[route.policy] : undefined;
+  const candidate = def ? policy.candidates[def.default] : undefined;
+  const egress = candidate?.via ? policy.egress[candidate.via] : undefined;
+  return egress?.forward_auth === true ? "subscription" : "token";
 }
 
 export type JsonObject = Record<string, unknown>;
@@ -59,14 +123,31 @@ function mergeHooks(existing: unknown, events: readonly string[], makeEntry: () 
 export function planClaudeCodeSettings(existing: unknown, target: SetupTarget): JsonObject {
   const settings: JsonObject = isObject(existing) ? { ...existing } : {};
   const env: JsonObject = isObject(settings.env) ? { ...settings.env } : {};
+  if (target.auth?.claudeCode === "subscription") {
+    // Claude Code must keep using its own login: a relay credential in ANTHROPIC_AUTH_TOKEN would replace it.
+    const { ANTHROPIC_AUTH_TOKEN: authToken, ANTHROPIC_API_KEY: apiKey, ...rest } = env;
+    const ours = authToken === "jev-router" || (target.token !== undefined && authToken === target.token);
+    settings.env = {
+      ...rest,
+      ...(authToken !== undefined && !ours ? { ANTHROPIC_AUTH_TOKEN: authToken } : {}),
+      ...(apiKey !== undefined && apiKey !== "" ? { ANTHROPIC_API_KEY: apiKey } : {}),
+      ANTHROPIC_BASE_URL: target.baseUrl,
+      ANTHROPIC_MODEL: AUTO_ROW_MODEL,
+      CLAUDE_CODE_GATEWAY_HINT_HEADERS: "1",
+    };
+    settings.modelPicker = planClaudeCodeModelPicker(settings.modelPicker, target.behavesAs);
+    settings.hooks = mergeHooks(settings.hooks, CLAUDE_CODE_HOOK_EVENTS, () => ({ hooks: [claudeCodeHttpHook(target.baseUrl)] }));
+    return settings;
+  }
   settings.env = {
     ...env,
     ANTHROPIC_BASE_URL: target.baseUrl,
     ANTHROPIC_AUTH_TOKEN: target.token ?? env.ANTHROPIC_AUTH_TOKEN ?? "jev-router",
     ANTHROPIC_API_KEY: "",
-    ANTHROPIC_MODEL: "claude-code/auto",
+    ANTHROPIC_MODEL: AUTO_ROW_MODEL,
     CLAUDE_CODE_GATEWAY_HINT_HEADERS: "1",
   };
+  settings.modelPicker = planClaudeCodeModelPicker(settings.modelPicker, target.behavesAs);
   settings.hooks = mergeHooks(settings.hooks, CLAUDE_CODE_HOOK_EVENTS, () => ({ hooks: [claudeCodeHttpHook(target.baseUrl)] }));
   return settings;
 }
@@ -89,13 +170,16 @@ const CODEX_BLOCK_END = "# <<< jev-router <<<";
  * A marked provider block is appended or refreshed. Everything else is left byte-for-byte.
  */
 export function planCodexConfig(existing: string, target: SetupTarget): string {
+  const subscription = target.auth?.codex === "subscription";
   const block = [
     CODEX_BLOCK_START,
     "[model_providers.jev-router]",
     'name = "jev-router"',
-    `base_url = "${target.baseUrl}/v1"`,
+    // With a ChatGPT login Codex attaches that login to a provider marked requires_openai_auth and talks to it the way
+    // it talks to chatgpt.com/backend-api/codex, so the relay mounts that path.
+    `base_url = "${target.baseUrl}${subscription ? "/backend-api/codex" : "/v1"}"`,
     'wire_api = "responses"',
-    'env_key = "JEV_ROUTER_TOKEN"',
+    subscription ? "requires_openai_auth = true" : 'env_key = "JEV_ROUTER_TOKEN"',
     CODEX_BLOCK_END,
     "",
   ].join("\n");

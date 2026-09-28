@@ -5,7 +5,7 @@ import type { TokenUsage } from "../core/record";
 import { resolveSessionKey } from "../core/session";
 import type { Harness } from "../core/types";
 import type { FetchLike } from "../judge/http";
-import type { DialectAdapter, JsonObject } from "./dialects/types";
+import { type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
 import {
   copyResponseHeaders,
   detectHarness,
@@ -68,6 +68,8 @@ export interface RelayRequest {
   readonly path: string;
   readonly query: string;
   readonly rawBody: string;
+  /** Egress that must serve an unrouted request, set when the request arrived under that egress's mount. */
+  readonly egressName?: string;
 }
 
 /** Route one inference request and stream the upstream response back in the client's own wire format. */
@@ -89,7 +91,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
 
   // Unknown model ids pass straight through to the default egress with credentials swapped and nothing rewritten.
   if (!route) {
-    const target = defaultEgress(policy);
+    const mounted = r.egressName ? policy.egress[r.egressName] : undefined;
+    const target = mounted && r.egressName ? { name: r.egressName, egress: mounted } : defaultEgress(policy);
     if (!target) {
       sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, "no egress configured for passthrough"));
       return;
@@ -154,6 +157,89 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
   });
 }
 
+export interface ProxyRequest {
+  readonly res: ServerResponse;
+  readonly headers: Headers;
+  readonly method: string;
+  /** Sub-path below the egress base URL, query included separately. */
+  readonly path: string;
+  readonly query: string;
+  readonly rawBody?: string;
+  readonly clientGone?: AbortSignal;
+  /** Rewrites a complete JSON response body before it is sent; streams and non-JSON bodies pass untouched. */
+  readonly transformJson?: (json: JsonObject) => JsonObject;
+}
+
+/**
+ * Forward one request to an egress unchanged apart from credentials: no routing, no session, no log. Used for the
+ * endpoints a harness needs next to inference when its own login is forwarded, such as Codex's model catalog.
+ */
+export async function proxy(
+  deps: RelayDeps,
+  target: { readonly name: string; readonly egress: EgressInput },
+  p: ProxyRequest,
+): Promise<void> {
+  const apiKey = target.egress.api_key_env ? deps.env[target.egress.api_key_env] : undefined;
+  const forwardAuth = target.egress.forward_auth === true;
+  if (!forwardAuth && !apiKey) {
+    sendJson(p.res, 502, errorBody(undefined, 502, `egress '${target.name}' has no API key configured`));
+    return;
+  }
+  const url = `${target.egress.base_url.replace(/\/+$/, "")}${p.path}${p.query}`;
+  // "anthropic" makes upstreamHeaders inject both bearer and x-api-key when a key is used; harmless elsewhere.
+  const headers = upstreamHeaders(p.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: "anthropic" });
+  const hasBody = p.rawBody !== undefined && p.rawBody !== "" && p.method !== "GET" && p.method !== "HEAD";
+  if (!hasBody) delete headers["content-type"];
+  const abort = new AbortController();
+  let finished = false;
+  const onClientGone = () => {
+    if (!finished) abort.abort();
+  };
+  if (p.clientGone?.aborted) onClientGone();
+  p.clientGone?.addEventListener("abort", onClientGone, { once: true });
+
+  let upstream: Response;
+  try {
+    upstream = await deps.fetch(url, { method: p.method, headers, ...(hasBody ? { body: p.rawBody } : {}), signal: abort.signal });
+  } catch (e) {
+    finished = true;
+    if (!p.res.headersSent)
+      sendJson(p.res, 502, errorBody(undefined, 502, `upstream unreachable: ${e instanceof Error ? e.message : String(e)}`));
+    return;
+  }
+  p.res.statusCode = upstream.status;
+  copyResponseHeaders(upstream, p.res);
+  p.res.setHeader("x-jev-router-source", "proxy");
+  p.res.setHeader("x-jev-router-egress", target.name);
+  const contentType = upstream.headers.get("content-type") ?? "";
+  if (p.transformJson && upstream.ok && contentType.includes("application/json")) {
+    const text = await upstream.text();
+    finished = true;
+    let out = text;
+    try {
+      const json: unknown = JSON.parse(text);
+      if (isObject(json)) out = JSON.stringify(p.transformJson(json));
+    } catch {
+      /* not JSON after all: pass it through untouched */
+    }
+    p.res.setHeader("content-length", Buffer.byteLength(out));
+    p.res.end(out);
+    return;
+  }
+  if (!upstream.body) {
+    finished = true;
+    p.res.end();
+    return;
+  }
+  try {
+    for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) p.res.write(chunk);
+    p.res.end();
+  } catch {
+    p.res.destroy();
+  }
+  finished = true;
+}
+
 interface ForwardOptions {
   readonly source: string;
   /** When set, the client's model id is echoed back in place of the upstream's. Absent for passthrough. */
@@ -209,6 +295,10 @@ async function forward(
     return;
   }
 
+  if (process.env.JEV_ROUTER_DEBUG_SSE)
+    console.error(
+      `jev-router forward: ${upstream.status} content-type=${upstream.headers.get("content-type")} requestedModel=${opts.requestedModel ?? "(none)"} body=${upstream.body ? "yes" : "no"}`,
+    );
   r.res.statusCode = upstream.status;
   copyResponseHeaders(upstream, r.res);
   r.res.setHeader("x-jev-router-source", opts.source);
@@ -227,14 +317,21 @@ async function forward(
     return;
   }
 
-  if (contentType.includes("text/event-stream")) {
+  // Some upstreams (chatgpt.com's Codex backend among them) stream without a content-type; the request asked for a
+  // stream, so treat the body as one rather than buffering it to the end.
+  const isStream = contentType.includes("text/event-stream") || (contentType === "" && body.stream === true);
+  if (isStream) {
     let usage: TokenUsage | undefined;
+    let terminalSeen = false;
     const stream = requestedModel
       ? upstream.body.pipeThrough(
           createSseTransform({
             requestedModel,
             onUsage: (u) => {
               usage = mergeUsage(usage, u);
+            },
+            onTerminal: () => {
+              terminalSeen = true;
             },
           }),
         )
@@ -245,8 +342,13 @@ async function forward(
       for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) r.res.write(chunk);
       r.res.end();
     } catch (e) {
-      streamError = clientDisconnected() ? "client disconnected" : `stream interrupted: ${e instanceof Error ? e.message : String(e)}`;
-      r.res.destroy();
+      // A client that hangs up after the terminal event (Codex does) got everything it asked for; only a hang-up
+      // before that, or an upstream fault, is a failed delivery.
+      if (clientDisconnected() && terminalSeen) r.res.end();
+      else {
+        streamError = clientDisconnected() ? "client disconnected" : `stream interrupted: ${e instanceof Error ? e.message : String(e)}`;
+        r.res.destroy();
+      }
     }
     finished = true;
     done(streamError === undefined, usage, streamError);

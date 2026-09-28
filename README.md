@@ -21,26 +21,25 @@ jev-router sits between Claude Code, Codex, OpenCode, or Pi and your model gatew
 
 ```bash
 npm install -g @french-castle/jev-router
-export OPENROUTER_API_KEY=sk-or-...    # or AI_GATEWAY_API_KEY for Vercel AI Gateway
-
-jev-router init      # writes ~/.jev-router/policy.json from your key, with live prices
-jev-router ping      # one real judge call: transport, latency, cost
-jev-router setup     # points your installed harnesses at the relay (preview with --dry-run)
-jev-router up        # start the relay and leave it running
+jev-router setup
 ```
 
-Prefer not to install globally? `npx @french-castle/jev-router up` works for every command, and `up` creates the policy itself when none exists.
+`setup` asks once for a judge key (an OpenRouter or Vercel AI Gateway key; jev costs about $0.00003 a decision), finds your Claude Code and Codex logins and any gateway keys, writes `~/.jev-router/policy.json` with live prices, points every installed harness at the relay, installs the relay as a background service (launchd on macOS, systemd on Linux), and checks that it answers. Preview everything with `--dry-run`. `npx @french-castle/jev-router setup` works without a global install.
 
-Then use your harness as usual. In Claude Code pick `claude-code/auto` under `/model`; Codex and OpenCode are configured to use the `auto` model by `setup`; Pi runs the extension in-process.
+Then use your harness as usual. Claude Code shows `auto (jev-router)` in `/model` and is set to it; Codex and OpenCode use the `auto` model; Pi runs the extension in-process. The pieces are also available one at a time: `init`, `ping`, `up`, `service`; see `jev-router help`.
 
 ## What you get
 
-| Keys you have | Judge | Inference |
+| What you have | Judge | Inference |
 |---|---|---|
 | `OPENROUTER_API_KEY` | jev through OpenRouter Decisions | OpenRouter |
 | `AI_GATEWAY_API_KEY` | jev through Vercel AI Gateway | Vercel AI Gateway |
 | `TYPESAFE_API_KEY` plus one of the above | jev direct from TypeSafe (`init --judge typesafe`) | that gateway |
 | `TYPESAFE_API_KEY` only | jev direct from TypeSafe | none for the relay; the Pi extension still routes with Pi's own providers |
+| Claude Code logged in with a claude.ai plan (Pro, Max) | one of the keys above | your plan, through Claude Code's own login: Haiku, Sonnet, Opus |
+| Codex logged in with ChatGPT | one of the keys above | your plan, through Codex's own login: the models your plan lists |
+
+Logins are never copied or stored. The harness sends its own credentials, the relay forwards them unchanged to Anthropic or OpenAI and only chooses the model, and `init` reads nothing but the plan type to know which models to offer. Costs for plan-backed models are shown at API list prices, the same scale a plan's allowance is consumed on.
 
 The generated policy has three candidates on models available on both gateways:
 

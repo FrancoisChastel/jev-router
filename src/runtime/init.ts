@@ -1,10 +1,19 @@
 import { access, mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { loadPolicy } from "../core/policy";
 import type { JudgeTransport, Policy } from "../core/policy/types";
 import type { FetchLike } from "../judge/http";
-import { buildDefaultPolicy, detectKeys, type EgressName, type KeyDetection, parseOpenRouterCatalog } from "./defaults";
+import {
+  buildDefaultPolicy,
+  describeSubscriptions,
+  detectKeys,
+  type EgressName,
+  type KeyDetection,
+  parseOpenRouterCatalog,
+} from "./defaults";
 import type { Env } from "./paths";
+import { detectSubscriptions, type SubscriptionDetection } from "./subscriptions";
 
 export interface InitOptions {
   readonly path: string;
@@ -14,6 +23,11 @@ export interface InitOptions {
   readonly egress?: EgressName;
   /** Fetch used for the live catalog. Pass undefined to skip the network. */
   readonly fetch?: FetchLike | null;
+  /** Home directory scanned for harness logins; defaults to the user's. */
+  readonly home?: string;
+  /** Subscriptions to build from, or `false` to ignore harness logins. Detected from `home` when omitted. */
+  readonly subscriptions?: SubscriptionDetection | false;
+  readonly readFile?: (path: string) => Promise<string>;
   readonly log?: (line: string) => void;
 }
 
@@ -21,6 +35,7 @@ export interface InitResult {
   readonly path: string;
   readonly written: boolean;
   readonly detection: KeyDetection;
+  readonly subscriptions?: SubscriptionDetection;
   readonly pricesFrom: "live catalog" | "built-in table";
   readonly policy: Policy;
 }
@@ -44,6 +59,11 @@ export async function initPolicy(opts: InitOptions): Promise<InitResult> {
   const env = opts.env ?? process.env;
   const log = opts.log ?? (() => undefined);
   const detection = detectKeys(env, { ...(opts.judge ? { judge: opts.judge } : {}), ...(opts.egress ? { egress: opts.egress } : {}) });
+  const subscriptions =
+    opts.subscriptions === false
+      ? undefined
+      : (opts.subscriptions ??
+        (await detectSubscriptions({ home: opts.home ?? homedir(), ...(opts.readFile ? { readFile: opts.readFile } : {}) })));
 
   let catalog: ReturnType<typeof parseOpenRouterCatalog> | undefined;
   const fetchImpl = opts.fetch === null ? undefined : (opts.fetch ?? fetch);
@@ -55,21 +75,22 @@ export async function initPolicy(opts: InitOptions): Promise<InitResult> {
       /* offline: curated prices are used */
     }
   }
-  const policy = loadPolicy(buildDefaultPolicy({ detection, ...(catalog && catalog.size > 0 ? { catalog } : {}) }));
-  const pricesFrom = catalog && catalog.size > 0 ? "live catalog" : "built-in table";
+  const build = { detection, ...(catalog && catalog.size > 0 ? { catalog } : {}), ...(subscriptions ? { subscriptions } : {}) };
+  const policy = loadPolicy(buildDefaultPolicy(build));
+  const pricesFrom: InitResult["pricesFrom"] = catalog && catalog.size > 0 ? "live catalog" : "built-in table";
+  const result = { path: opts.path, detection, ...(subscriptions ? { subscriptions } : {}), pricesFrom, policy };
 
   if ((await exists(opts.path)) && !opts.force) {
     log(`policy: keeping existing ${opts.path} (use --force to regenerate)`);
-    return { path: opts.path, written: false, detection, pricesFrom, policy };
+    return { ...result, written: false };
   }
   await mkdir(dirname(opts.path), { recursive: true });
-  const document = buildDefaultPolicy({ detection, ...(catalog && catalog.size > 0 ? { catalog } : {}) });
-  await writeFile(opts.path, `${JSON.stringify(document, null, 2)}\n`);
+  await writeFile(opts.path, `${JSON.stringify(buildDefaultPolicy(build), null, 2)}\n`);
   log(`policy: wrote ${opts.path}`);
-  return { path: opts.path, written: true, detection, pricesFrom, policy };
+  return { ...result, written: true };
 }
 
-export function describeDetection(d: KeyDetection): string[] {
+export function describeDetection(d: KeyDetection, subs?: SubscriptionDetection): string[] {
   const lines: string[] = [];
   lines.push(d.found.length > 0 ? `keys    ${d.found.join(", ")}` : "keys    none found");
   lines.push(
@@ -78,7 +99,10 @@ export function describeDetection(d: KeyDetection): string[] {
   lines.push(
     d.egress
       ? `egress  ${d.egress}`
-      : "egress  none: the relay needs OPENROUTER_API_KEY or AI_GATEWAY_API_KEY; the Pi extension works without one",
+      : subs?.anthropic || subs?.chatgpt
+        ? "egress  no gateway key: harnesses without a subscription route below have nowhere to send traffic"
+        : "egress  none: the relay needs OPENROUTER_API_KEY or AI_GATEWAY_API_KEY; the Pi extension works without one",
   );
+  lines.push(...describeSubscriptions(subs));
   return lines;
 }

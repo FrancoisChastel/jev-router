@@ -72,3 +72,32 @@ describe("policy loading", () => {
     expect(JSON.stringify(raw)).toBe(snapshot);
   });
 });
+
+describe("candidate subsets and mounted egress", () => {
+  test("a policy may use a subset of candidates, but its default and rule targets must be in it", () => {
+    const raw = minimalPolicy();
+    raw.policies.default.order = ["fast", "frontier"];
+    raw.policies.default.rules = [{ when: "stakes >= 2.5", then: { at_least: "frontier" } }];
+    expect(tierOrder(loadPolicy(raw), "default")).toEqual(["fast", "frontier"]);
+    raw.policies.default.rules = [{ when: "stakes >= 2.5", then: { at_least: "mid" } }];
+    expect(() => loadPolicy(raw)).toThrow(/unknown candidate 'mid'/);
+    raw.policies.default.rules = [];
+    raw.policies.default.default = "mid";
+    expect(() => loadPolicy(raw)).toThrow(/must be listed in order/);
+    raw.policies.default.default = "fast";
+    raw.policies.default.order = ["fast", "fast"];
+    expect(() => loadPolicy(raw)).toThrow(/repeat/);
+  });
+
+  test("egress mounts are absolute paths without a trailing slash, distinct, and billing is usd or subscription", () => {
+    const raw = minimalPolicy();
+    raw.egress = { a: { base_url: "https://x", mount: "/backend-api/codex", forward_auth: true, billing: "subscription" } };
+    expect(loadPolicy(raw).egress.a?.mount).toBe("/backend-api/codex");
+    raw.egress = { a: { base_url: "https://x", mount: "backend/" } };
+    expect(() => loadPolicy(raw)).toThrow(/mount/);
+    raw.egress = { a: { base_url: "https://x", mount: "/m" }, b: { base_url: "https://y", mount: "/m" } };
+    expect(() => loadPolicy(raw)).toThrow(/distinct/);
+    raw.egress = { a: { base_url: "https://x", billing: "credits" as "usd" } };
+    expect(() => loadPolicy(raw)).toThrow(/billing/);
+  });
+});

@@ -55,7 +55,7 @@ export function resolveSessionKey(headers: Readonly<Record<string, string | unde
     const agent = h("x-claude-code-agent-id");
     return { key: agent ? `cc:${cc}:${agent}` : `cc:${cc}`, source: "claude-code" };
   }
-  const codex = h("conversation_id") ?? h("session_id");
+  const codex = h("thread-id") ?? h("conversation_id") ?? h("session_id") ?? h("session-id");
   if (codex) return { key: `codex:${codex}`, source: "codex" };
   const pi = h("x-session-id");
   if (pi) return { key: `sid:${pi}`, source: "x-session-id" };

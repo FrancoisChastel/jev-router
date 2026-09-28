@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { planClaudeCodeSettings, planCodexConfig, planCodexHooks, planOpenCodeConfig } from "../../src/cli/plans";
+import {
+  anthropicModelId,
+  claudeCodeBehavesAs,
+  harnessAuth,
+  planClaudeCodeModelPicker,
+  planClaudeCodeSettings,
+  planCodexConfig,
+  planCodexHooks,
+  planOpenCodeConfig,
+} from "../../src/cli/plans";
+import { loadPolicy } from "../../src/core/policy";
+import { minimalPolicy } from "../fixtures/policies";
 
 const target = { baseUrl: "http://127.0.0.1:4141", hookCommand: "/usr/local/bin/jev-router" };
 
@@ -100,5 +111,92 @@ describe("opencode plan", () => {
     expect(out.model).toBe("openrouter/foo");
     const fresh = planOpenCodeConfig(undefined, target) as { model: string };
     expect(fresh.model).toBe("jev-router/auto");
+  });
+});
+
+describe("subscription auth plans", () => {
+  test("claude code keeps its own login: no relay credential written, ours removed, a foreign one kept", () => {
+    const sub = { ...target, auth: { claudeCode: "subscription" as const } };
+    const out = planClaudeCodeSettings({ env: { ANTHROPIC_AUTH_TOKEN: "jev-router", ANTHROPIC_API_KEY: "", KEEP: "1" } }, sub) as {
+      env: Record<string, string>;
+      hooks: Record<string, unknown[]>;
+    };
+    expect(out.env).toEqual({
+      KEEP: "1",
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:4141",
+      ANTHROPIC_MODEL: "claude-code/auto",
+      CLAUDE_CODE_GATEWAY_HINT_HEADERS: "1",
+    });
+    expect(out.hooks.PostToolUse).toHaveLength(1);
+    const foreign = planClaudeCodeSettings({ env: { ANTHROPIC_AUTH_TOKEN: "corp-gateway", ANTHROPIC_API_KEY: "sk-real" } }, sub) as {
+      env: Record<string, string>;
+    };
+    expect(foreign.env.ANTHROPIC_AUTH_TOKEN).toBe("corp-gateway");
+    expect(foreign.env.ANTHROPIC_API_KEY).toBe("sk-real");
+    const withToken = planClaudeCodeSettings({ env: { ANTHROPIC_AUTH_TOKEN: "tok" } }, { ...sub, token: "tok" }) as {
+      env: Record<string, string>;
+    };
+    expect(withToken.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+
+  test("codex gets a provider that carries its ChatGPT login to the mounted path", () => {
+    const out = planCodexConfig("", { ...target, auth: { codex: "subscription" } });
+    expect(out).toContain('base_url = "http://127.0.0.1:4141/backend-api/codex"');
+    expect(out).toContain("requires_openai_auth = true");
+    expect(out).not.toContain("env_key");
+    expect(out).toContain('model = "auto"');
+    expect(out).toContain('model_provider = "jev-router"');
+    const tokenMode = planCodexConfig("", target);
+    expect(tokenMode).toContain('base_url = "http://127.0.0.1:4141/v1"');
+    expect(tokenMode).toContain('env_key = "JEV_ROUTER_TOKEN"');
+  });
+
+  test("harnessAuth follows each harness's route to its default candidate's egress", () => {
+    const raw = minimalPolicy();
+    expect(harnessAuth(loadPolicy(raw), "codex")).toBe("token");
+    expect(harnessAuth(loadPolicy(raw), "claude-code")).toBe("token");
+    raw.egress = { sub: { base_url: "https://api.anthropic.com", forward_auth: true } };
+    raw.candidates.fast.via = "sub";
+    raw.routes = [
+      { id: "auto", harness: "any", policy: "default" },
+      { id: "claude-code/auto", harness: "claude-code", policy: "default" },
+    ];
+    const p = loadPolicy(raw);
+    expect(harnessAuth(p, "claude-code")).toBe("subscription");
+    expect(harnessAuth(p, "codex")).toBe("subscription");
+  });
+});
+
+describe("claude code model picker", () => {
+  test("adds the auto row once, keeps other rows and picker settings, and borrows a known model's handling", () => {
+    const existing = {
+      replaceBuiltInOptions: false,
+      options: [
+        { model: "claude-code/auto", label: "old" },
+        { model: "claude-opus-5-5", label: "mine" },
+      ],
+    };
+    const out = planClaudeCodeModelPicker(existing, "claude-sonnet-5") as {
+      replaceBuiltInOptions: boolean;
+      options: { model: string; behavesAs?: string }[];
+    };
+    expect(out.replaceBuiltInOptions).toBe(false);
+    expect(out.options.map((o) => o.model)).toEqual(["claude-code/auto", "claude-opus-5-5"]);
+    expect(out.options[0]).toMatchObject({ model: "claude-code/auto", label: "auto (jev-router)", behavesAs: "claude-sonnet-5" });
+    expect(
+      (planClaudeCodeModelPicker(undefined, undefined) as { options: { behavesAs?: string }[] }).options[0]?.behavesAs,
+    ).toBeUndefined();
+    const settings = planClaudeCodeSettings({}, { ...target, behavesAs: "claude-sonnet-5" }) as { modelPicker: { options: unknown[] } };
+    expect(settings.modelPicker.options).toHaveLength(1);
+  });
+  test("anthropicModelId strips the gateway prefix and dotted versions; behavesAs follows the claude-code route", () => {
+    expect(anthropicModelId("anthropic/claude-opus-5.5")).toBe("claude-opus-5-5");
+    expect(anthropicModelId("claude-sonnet-5")).toBe("claude-sonnet-5");
+    expect(anthropicModelId("openai/gpt-6-luna")).toBeUndefined();
+    const raw = minimalPolicy();
+    raw.candidates.fast.model = "anthropic/claude-haiku-4.5";
+    expect(claudeCodeBehavesAs(loadPolicy(raw))).toBe("claude-haiku-4-5");
+    raw.candidates.fast.model = "openai/gpt-6-luna";
+    expect(claudeCodeBehavesAs(loadPolicy(raw))).toBeUndefined();
   });
 });

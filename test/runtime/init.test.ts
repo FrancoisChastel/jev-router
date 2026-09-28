@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadPolicy } from "../../src/core/policy";
-import { buildDefaultPolicy, DEFAULT_CANDIDATES, detectKeys, parseOpenRouterCatalog } from "../../src/runtime/defaults";
-import { initPolicy } from "../../src/runtime/init";
+import { loadPolicy as load, loadPolicy, tierOrder } from "../../src/core/policy";
+import { buildDefaultPolicy, codexTiers, DEFAULT_CANDIDATES, detectKeys, parseOpenRouterCatalog } from "../../src/runtime/defaults";
+import { describeDetection, initPolicy } from "../../src/runtime/init";
+import { CODEX_BUILT_IN_MODELS } from "../../src/runtime/subscriptions";
 
 describe("key detection", () => {
   test("one OpenRouter key serves both judge and egress", () => {
@@ -64,15 +65,15 @@ describe("initPolicy", () => {
   test("writes once, keeps an existing file, regenerates with force, and works offline", async () => {
     const dir = await mkdtemp(join(tmpdir(), "jev-init-"));
     const path = join(dir, "nested", "policy.json");
-    const first = await initPolicy({ path, env: { AI_GATEWAY_API_KEY: "k" }, fetch: null });
+    const first = await initPolicy({ subscriptions: false, path, env: { AI_GATEWAY_API_KEY: "k" }, fetch: null });
     expect(first.written).toBe(true);
     expect(first.pricesFrom).toBe("built-in table");
     expect(first.policy.judge.transport).toBe("vercel");
     expect((await stat(path)).size).toBeGreaterThan(100);
-    const second = await initPolicy({ path, env: { OPENROUTER_API_KEY: "k" }, fetch: null });
+    const second = await initPolicy({ subscriptions: false, path, env: { OPENROUTER_API_KEY: "k" }, fetch: null });
     expect(second.written).toBe(false);
     expect(JSON.parse(await readFile(path, "utf8")).judge.transport).toBe("vercel");
-    const third = await initPolicy({ path, env: { OPENROUTER_API_KEY: "k" }, fetch: null, force: true });
+    const third = await initPolicy({ subscriptions: false, path, env: { OPENROUTER_API_KEY: "k" }, fetch: null, force: true });
     expect(third.written).toBe(true);
     expect(JSON.parse(await readFile(path, "utf8")).judge.transport).toBe("openrouter");
   });
@@ -81,13 +82,99 @@ describe("initPolicy", () => {
     const dir = await mkdtemp(join(tmpdir(), "jev-init-"));
     const good = async () =>
       Response.json({ data: [{ id: DEFAULT_CANDIDATES.mid.model, pricing: { prompt: "0.000003", completion: "0.000004" } }] });
-    const r = await initPolicy({ path: join(dir, "p.json"), env: { OPENROUTER_API_KEY: "k" }, fetch: good });
+    const r = await initPolicy({ subscriptions: false, path: join(dir, "p.json"), env: { OPENROUTER_API_KEY: "k" }, fetch: good });
     expect(r.pricesFrom).toBe("live catalog");
     expect(r.policy.candidates.mid?.price).toEqual({ in: 3, out: 4 });
     const bad = async () => {
       throw new Error("offline");
     };
-    const r2 = await initPolicy({ path: join(dir, "q.json"), env: { OPENROUTER_API_KEY: "k" }, fetch: bad });
+    const r2 = await initPolicy({ subscriptions: false, path: join(dir, "q.json"), env: { OPENROUTER_API_KEY: "k" }, fetch: bad });
     expect(r2.pricesFrom).toBe("built-in table");
+  });
+});
+
+describe("subscription-backed policies", () => {
+  test("a Claude Code login adds Haiku, Sonnet, Opus behind a forwarding egress with its own route and policy", () => {
+    const p = load(
+      buildDefaultPolicy({
+        detection: detectKeys({ OPENROUTER_API_KEY: "k" }),
+        subscriptions: { anthropic: { plan: "max", tier: "default_claude_max_20x" } },
+      }),
+    );
+    expect(p.egress["anthropic-subscription"]).toEqual({
+      base_url: "https://api.anthropic.com",
+      forward_auth: true,
+      billing: "subscription",
+    });
+    expect(p.routes).toEqual([
+      { id: "auto", harness: "any", policy: "default" },
+      { id: "claude-code/auto", harness: "claude-code", policy: "claude-code" },
+    ]);
+    expect(tierOrder(p, "claude-code")).toEqual(["claude-haiku", "claude-sonnet", "claude-opus"]);
+    expect(p.policies["claude-code"]?.default).toBe("claude-sonnet");
+    expect(p.candidates["claude-opus"]?.model).toBe("claude-opus-5-5");
+    expect(p.candidates["claude-opus"]?.via).toBe("anthropic-subscription");
+    expect(tierOrder(p, "default")).toEqual(["fast", "mid", "frontier"]);
+    expect(p.policies["claude-code"]?.rules.map((r) => r.then)).toContainEqual({ pin: "claude-haiku" });
+  });
+
+  test("a Codex login adds price-ordered tiers under the chatgpt mount, with or without a gateway key", () => {
+    const p = load(
+      buildDefaultPolicy({
+        detection: detectKeys({}),
+        subscriptions: { chatgpt: { plan: "plus", models: CODEX_BUILT_IN_MODELS, modelsFrom: "built-in" } },
+      }),
+    );
+    expect(p.egress["chatgpt-subscription"]).toMatchObject({ mount: "/backend-api/codex", forward_auth: true, billing: "subscription" });
+    expect(p.routes.find((r) => r.harness === "codex")).toEqual({ id: "auto", harness: "codex", policy: "codex" });
+    expect(tierOrder(p, "codex")).toEqual(["codex-fast", "codex-mid", "codex-frontier"]);
+    expect([p.candidates["codex-fast"]?.model, p.candidates["codex-mid"]?.model, p.candidates["codex-frontier"]?.model]).toEqual([
+      "gpt-6-luna",
+      "gpt-6-sol",
+      "gpt-6-astra",
+    ]);
+    expect(p.candidates["codex-fast"]?.effort).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(p.candidates["codex-fast"]?.default_effort).toBe("medium");
+  });
+
+  test("codexTiers prefers catalog prices, skips hidden and unpriced models, and drops tiers it cannot fill", () => {
+    const models = [
+      { slug: "a", effort: [], priority: 1, listed: true },
+      { slug: "b", effort: [], priority: 2, listed: true },
+      { slug: "hidden", effort: [], priority: 0, listed: false },
+      { slug: "unpriced", effort: [], priority: 3, listed: true },
+    ];
+    const catalog = new Map([
+      ["openai/a", { id: "openai/a", price: { in: 1, out: 2 }, vision: true, tools: true }],
+      ["openai/b", { id: "openai/b", price: { in: 20, out: 40 }, vision: true, tools: true }],
+      ["openai/hidden", { id: "openai/hidden", price: { in: 0.01, out: 0.02 }, vision: true, tools: true }],
+    ]);
+    expect(codexTiers(models, catalog).map((t) => t.model.slug)).toEqual(["a", "b"]);
+    const p = load(
+      buildDefaultPolicy({ detection: detectKeys({}), catalog, subscriptions: { chatgpt: { plan: "plus", models, modelsFrom: "cache" } } }),
+    );
+    expect(tierOrder(p, "codex")).toEqual(["codex-fast", "codex-frontier"]);
+    expect(p.policies.codex?.rules.map((r) => r.then)).not.toContainEqual({ at_least: "codex-mid" });
+    expect(codexTiers([], catalog)).toEqual([]);
+    expect(
+      load(
+        buildDefaultPolicy({ detection: detectKeys({}), subscriptions: { chatgpt: { plan: "plus", models: [], modelsFrom: "cache" } } }),
+      ).routes.some((r) => r.harness === "codex"),
+    ).toBe(false);
+  });
+
+  test("initPolicy detects logins from the home it is given, and subscriptions: false ignores them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "jev-sub-"));
+    const readFile = async (p: string) => {
+      if (p.endsWith(".claude.json")) return JSON.stringify({ oauthAccount: { organizationType: "claude_max" } });
+      throw new Error("ENOENT");
+    };
+    const r = await initPolicy({ path: join(dir, "policy.json"), env: {}, fetch: null, home: "/h", readFile });
+    expect(r.subscriptions?.anthropic?.plan).toBe("max");
+    expect(r.policy.routes.map((x) => x.policy)).toContain("claude-code");
+    expect(describeDetection(r.detection, r.subscriptions).some((l) => l.includes("Claude Code login (max)"))).toBe(true);
+    const off = await initPolicy({ path: join(dir, "off.json"), env: {}, fetch: null, subscriptions: false });
+    expect(off.subscriptions).toBeUndefined();
+    expect(Object.keys(off.policy.candidates)).toEqual(["fast", "mid", "frontier"]);
   });
 });

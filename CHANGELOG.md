@@ -4,8 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-27
+
 ### Added
 
+- One-command install: `jev-router setup` asks for the judge key once (stored in `~/.jev-router/env`, mode 600, read by every command), detects Claude Code and Codex logins and which harnesses are installed, writes the policy, configures each harness, installs the relay as a background service (launchd on macOS, systemd user unit on Linux), and checks that it answers. `jev-router service install|uninstall|status` manages the service; `--no-service`, `--no-prompt`, `--judge-key`, `--dry-run` cover the rest.
+- Plan-backed inference. A Claude Code login (Pro, Max) routes `claude-code/auto` over Haiku, Sonnet, and Opus through Claude Code's own OAuth, forwarded unchanged to api.anthropic.com. A Codex ChatGPT login routes `auto` over the models the plan lists, through a provider marked `requires_openai_auth` and a relay mount at `/backend-api/codex` that proxies Codex's catalog (with an `auto` entry added) and its other backend calls. Nothing is copied or stored: `init` reads only the plan type, and the relay forwards each harness's credentials at request time.
+- Policy: egress `mount` and `billing` fields; policies may use a subset of candidates via `order`; Codex `thread-id` / `session-id` headers key sessions.
+- Claude Code `modelPicker` row for `claude-code/auto` with `behavesAs`, so the picker shows `auto (jev-router)` and Claude Code stops warning about an unknown model.
+- Usage is captured from Responses streams (`response.completed`), not only chat completions and Anthropic messages.
 - `scripts/bench-batch.sh` chains benchmark configurations with an OpenRouter spend guard (`BENCH_MAX_SPEND_USD`).
 - `BENCH_ATTEMPTS` and `BENCH_RUN_NAME` for the benchmark runner; `scripts/bench-report.mjs` attributes relay sessions to tasks, so every task shows its own upstream cost and served tiers, and aggregates repeated attempts.
 - First measured results in `docs/evaluation.md`: a 12-task Terminal-Bench 2.0 subset with Pi, four configurations, $4 total.

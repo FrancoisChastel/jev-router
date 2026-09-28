@@ -21,6 +21,13 @@ export interface EgressInput {
   readonly pi_provider?: string;
   /** Forward the caller's own credentials instead of the configured key. */
   readonly forward_auth?: boolean;
+  /**
+   * Relay path prefix this egress serves, for example "/backend-api/codex". Requests under it keep their sub-path:
+   * an inference sub-path (`/responses`, `/chat/completions`, `/messages`) is routed, anything else is proxied unchanged.
+   */
+  readonly mount?: string;
+  /** `subscription` marks an upstream billed by a plan; candidate prices are then API-equivalent weights, not dollars. */
+  readonly billing?: "usd" | "subscription";
 }
 
 export interface CandidateCapabilities {
@@ -65,6 +72,7 @@ export interface SwitchInput {
 
 export interface PolicyDefInput {
   readonly default: string;
+  /** Candidates this policy may use, cheapest first. Defaults to every candidate ordered by input price. */
   readonly order?: readonly string[];
   readonly min_confidence?: number;
   readonly hold_turns?: number;

@@ -88,6 +88,11 @@
   "policies": {
     "default": {
       "default": "fast",
+      "order": [
+        "fast",
+        "mid",
+        "frontier"
+      ],
       "min_confidence": 0.6,
       "hold_turns": 2,
       "confidence_threshold": 0.5,
