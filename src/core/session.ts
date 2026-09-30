@@ -58,10 +58,14 @@ export interface SessionKey {
 }
 
 /**
- * Resolve a session key from harness headers, falling back to a digest of the conversation prefix.
- * Header names are matched case-insensitively.
+ * Resolve a session key from harness headers, then a key the request body carries (Gemini CLI's Code Assist requests
+ * hold `session_id`), falling back to a digest of the conversation prefix. Header names are matched case-insensitively.
  */
-export function resolveSessionKey(headers: Readonly<Record<string, string | undefined>>, prefixDigest: string): SessionKey {
+export function resolveSessionKey(
+  headers: Readonly<Record<string, string | undefined>>,
+  prefixDigest: string,
+  bodyKey?: string,
+): SessionKey {
   const h = (name: string): string | undefined => {
     for (const [k, v] of Object.entries(headers)) if (k.toLowerCase() === name && v) return v;
     return undefined;
@@ -77,5 +81,6 @@ export function resolveSessionKey(headers: Readonly<Record<string, string | unde
   if (pi) return { key: `sid:${pi}`, source: "x-session-id" };
   const oc = h("x-opencode-session");
   if (oc) return { key: `oc:${oc}`, source: "opencode" };
+  if (bodyKey) return { key: bodyKey, source: "body" };
   return { key: `prefix:${prefixDigest}`, source: "prefix" };
 }

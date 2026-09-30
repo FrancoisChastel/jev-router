@@ -45,6 +45,7 @@ const HARNESSES: ReadonlySet<string> = new Set<Harness | "any">([
   "codex",
   "opencode",
   "cursor",
+  "gemini",
   "hermes",
   "unknown",
   "any",

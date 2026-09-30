@@ -57,6 +57,35 @@ const BUILT_IN: Readonly<Record<Exclude<Harness, "unknown" | "hermes">, ToolSema
     plan: ["todo_write"],
     shell: ["run_terminal_cmd"],
   },
+  // Gemini CLI 0.62 built-in tools, as declared in its requests.
+  gemini: {
+    observe: [
+      "read_file",
+      "read_many_files",
+      "list_directory",
+      "glob",
+      "grep_search",
+      "web_fetch",
+      "google_web_search",
+      "read_background_output",
+      "list_background_processes",
+      "list_mcp_resources",
+      "read_mcp_resource",
+      "get_internal_docs",
+    ],
+    mutate: ["replace", "write_file"],
+    plan: [
+      "write_todos",
+      "enter_plan_mode",
+      "exit_plan_mode",
+      "update_topic",
+      "invoke_agent",
+      "tracker_create_task",
+      "tracker_update_task",
+      "tracker_add_dependency",
+    ],
+    shell: ["run_shell_command"],
+  },
 };
 
 const GENERIC: readonly (readonly [ToolClass, ReadonlySet<string>])[] = [

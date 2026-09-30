@@ -18,7 +18,7 @@ export interface SetupTarget {
    * it, so no relay credential is written. `token` (default): the relay credential is written and the relay injects a
    * gateway key.
    */
-  readonly auth?: { readonly claudeCode?: HarnessAuth; readonly codex?: HarnessAuth };
+  readonly auth?: { readonly claudeCode?: HarnessAuth; readonly codex?: HarnessAuth; readonly gemini?: HarnessAuth };
   /** A model this Claude Code version knows, lending its client-side handling to the `claude-code/auto` picker row. */
   readonly behavesAs?: string;
 }
@@ -62,7 +62,7 @@ export function planClaudeCodeModelPicker(existing: unknown, behavesAs: string |
 }
 
 /** Whether a harness's route ends at an egress that forwards the caller's own credentials. */
-export function harnessAuth(policy: Policy, harness: "claude-code" | "codex"): HarnessAuth {
+export function harnessAuth(policy: Policy, harness: "claude-code" | "codex" | "gemini"): HarnessAuth {
   const id = harness === "claude-code" ? "claude-code/auto" : "auto";
   const route =
     policy.routes.find((r) => r.id === id && r.harness === harness) ??
@@ -96,7 +96,7 @@ function claudeCodeHttpHook(baseUrl: string): JsonObject {
   return { type: "http", url: `${baseUrl}/hooks/claude-code`, timeout: HTTP_HOOK_TIMEOUT_S };
 }
 
-const LOCAL_HOOK_URL = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/hooks\/(claude-code|codex)$/;
+const LOCAL_HOOK_URL = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/hooks\/(claude-code|codex|gemini)$/;
 
 /** Only entries jev-router itself generated: a local relay hook URL, or a command that runs our hook subcommand. */
 function isOurs(entry: unknown): boolean {
@@ -105,12 +105,12 @@ function isOurs(entry: unknown): boolean {
     (h) =>
       isObject(h) &&
       ((typeof h.url === "string" && LOCAL_HOOK_URL.test(h.url)) ||
-        (typeof h.command === "string" && /\bjev-router(\S*)?\s+hook\s+(claude-code|codex)\b/.test(h.command))),
+        (typeof h.command === "string" && /\bjev-router(\S*)?\s+hook\s+(claude-code|codex|gemini)\b/.test(h.command))),
   );
 }
 
 /** Merge one hook entry per event, replacing any earlier jev-router entry and keeping everything else. */
-function mergeHooks(existing: unknown, events: readonly string[], makeEntry: () => JsonObject): JsonObject {
+export function mergeHooks(existing: unknown, events: readonly string[], makeEntry: () => JsonObject): JsonObject {
   const hooks: JsonObject = isObject(existing) ? { ...existing } : {};
   for (const event of events) {
     const current = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];

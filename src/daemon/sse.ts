@@ -4,10 +4,15 @@
  * is forwarded exactly as received. Non-JSON data lines are never touched.
  */
 
+import { usageOf } from "./http-util";
+
+/** Re-exported for the cascade, which reads usage from buffered stream events. */
+export { usageOf };
+
 export interface SseTransformOptions {
   readonly requestedModel: string;
   readonly onUsage?: (usage: Record<string, unknown>) => void;
-  /** Called once the stream's terminal event has passed: `[DONE]`, `message_stop`, or a Responses `response.completed` / `failed` / `incomplete`. */
+  /** Called once the stream's terminal event has passed: `[DONE]`, `message_stop`, a Responses `response.completed` / `failed` / `incomplete`, or a Gemini chunk with a finishReason. */
   readonly onTerminal?: () => void;
 }
 
@@ -20,14 +25,22 @@ const TERMINAL_TYPES: ReadonlySet<string> = new Set([
   "error",
 ]);
 
-/** The usage object an event carries: top level (chat), inside `message` (Anthropic), or inside `response` (Responses). */
-export function usageOf(obj: Record<string, unknown>): Record<string, unknown> | undefined {
-  const inner = (k: string): unknown => {
-    const v = obj[k];
-    return typeof v === "object" && v !== null ? (v as { usage?: unknown }).usage : undefined;
-  };
-  const usage = obj.usage ?? inner("message") ?? inner("response");
-  return typeof usage === "object" && usage !== null ? (usage as Record<string, unknown>) : undefined;
+/** `model` and `modelVersion` set to the requested id where present; the same object when nothing changes. */
+function echoModelFields(o: Record<string, unknown>, requestedModel: string): Record<string, unknown> {
+  let out = o;
+  if (typeof o.model === "string" && o.model !== requestedModel) out = { ...out, model: requestedModel };
+  if (typeof o.modelVersion === "string" && o.modelVersion !== requestedModel) out = { ...out, modelVersion: requestedModel };
+  return out;
+}
+
+/** A Gemini stream has no terminal event; the chunk whose candidate carries a finishReason is the last one. */
+function isGeminiTerminal(obj: Record<string, unknown>): boolean {
+  const holder = typeof obj.response === "object" && obj.response !== null ? (obj.response as Record<string, unknown>) : obj;
+  const candidates = holder.candidates;
+  return (
+    Array.isArray(candidates) &&
+    candidates.some((c) => typeof c === "object" && c !== null && typeof (c as { finishReason?: unknown }).finishReason === "string")
+  );
 }
 
 function rewriteDataLine(rawLine: string, opts: SseTransformOptions): string {
@@ -60,14 +73,23 @@ function rewriteDataLine(rawLine: string, opts: SseTransformOptions): string {
     out = { ...out, message: { ...(message as Record<string, unknown>), model: opts.requestedModel } };
     changed = true;
   }
-  // Responses API events carry the model and usage inside `response` (response.created, response.completed).
+  // Responses API events carry the model inside `response` (response.created, response.completed); Gemini's Code
+  // Assist backend wraps a whole Gemini chunk, `modelVersion` included, in `response`.
   const response = obj.response;
-  if (typeof response === "object" && response !== null && typeof (response as { model?: unknown }).model === "string") {
-    if ((response as { model: string }).model !== opts.requestedModel) {
-      out = { ...out, response: { ...(response as Record<string, unknown>), model: opts.requestedModel } };
+  if (typeof response === "object" && response !== null) {
+    const inner = response as Record<string, unknown>;
+    const rewritten = echoModelFields(inner, opts.requestedModel);
+    if (rewritten !== inner) {
+      out = { ...out, response: rewritten };
       changed = true;
     }
   }
+  // Gemini chunks name the served model in `modelVersion`.
+  if (typeof obj.modelVersion === "string" && obj.modelVersion !== opts.requestedModel) {
+    out = { ...out, modelVersion: opts.requestedModel };
+    changed = true;
+  }
+  if (isGeminiTerminal(obj)) opts.onTerminal?.();
   const usage = usageOf(obj);
   if (opts.onUsage && usage) opts.onUsage(usage);
   if (!changed) return rawLine;

@@ -3,8 +3,8 @@ export type Effort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_ORDER: readonly Effort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** Wire formats the relay speaks; an egress may declare the subset its upstream accepts. */
-export type WireDialect = "anthropic" | "openai-chat" | "openai-responses";
-export const WIRE_DIALECTS: readonly WireDialect[] = ["anthropic", "openai-chat", "openai-responses"];
+export type WireDialect = "anthropic" | "openai-chat" | "openai-responses" | "gemini" | "gemini-code-assist";
+export const WIRE_DIALECTS: readonly WireDialect[] = ["anthropic", "openai-chat", "openai-responses", "gemini", "gemini-code-assist"];
 
 /** Plan usage-window utilization observed on a subscription egress, each a fraction 0..1. */
 export interface PlanUtilization {
@@ -12,7 +12,7 @@ export interface PlanUtilization {
   readonly sevenDay?: number;
 }
 
-export type Harness = "pi" | "claude-code" | "codex" | "opencode" | "cursor" | "hermes" | "unknown";
+export type Harness = "pi" | "claude-code" | "codex" | "opencode" | "cursor" | "gemini" | "hermes" | "unknown";
 
 /** Request class as reported by Claude Code gateway hint headers; other harnesses map into it. */
 export type RequestClass = "main" | "subagent" | "workflow" | "compaction" | "auxiliary";

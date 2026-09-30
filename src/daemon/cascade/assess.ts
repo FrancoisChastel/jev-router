@@ -1,7 +1,7 @@
 import type { CascadeTrigger } from "../../core/policy/types";
 import type { Dialect } from "../dialects/types";
 import { jsonObject, sseDataObjects } from "./body";
-import { EMPTY_REPLY, type Fold, foldAnthropic, foldChat, foldResponses, type ReplySummary } from "./replies";
+import { EMPTY_REPLY, type Fold, foldAnthropic, foldChat, foldGemini, foldResponses, type ReplySummary } from "./replies";
 
 export interface AssessInput {
   readonly dialect: Dialect;
@@ -16,7 +16,13 @@ export interface AssessInput {
 export type Assessment = { readonly ok: true } | { readonly ok: false; readonly trigger: CascadeTrigger; readonly detail: string };
 
 const ALL: readonly CascadeTrigger[] = ["upstream_error", "empty", "refusal", "truncated"];
-const FOLDS: Readonly<Record<Dialect, Fold>> = { anthropic: foldAnthropic, "openai-chat": foldChat, "openai-responses": foldResponses };
+const FOLDS: Readonly<Record<Dialect, Fold>> = {
+  anthropic: foldAnthropic,
+  "openai-chat": foldChat,
+  "openai-responses": foldResponses,
+  gemini: foldGemini,
+  "gemini-code-assist": foldGemini,
+};
 /** Replies longer than this are real answers even when they open with an apology. */
 export const REFUSAL_MAX_CHARS = 400;
 const REFUSAL_LEXICON = /\b(i can't|i cannot|i'm unable|i am unable|i won't|as an ai)\b/i;

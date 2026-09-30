@@ -74,6 +74,35 @@ export function claudeCodeHookToObserve(payload: Payload): ObserveEvent | undefi
   }
 }
 
+/** Gemini CLI's shell tool reports a failed command in its text, not as an error. */
+const GEMINI_SHELL_EXIT = /\bExit Code: ([1-9]\d*|-\d+)\b/;
+
+/**
+ * Map a native Gemini CLI hook payload. `session_id` is the id Gemini CLI also sends as `request.session_id` to its
+ * Code Assist backend, so these events join the relay session there. AfterTool carries
+ * `tool_response: { llmContent, returnDisplay, error }`; `error` is set only when the tool failed.
+ */
+export function geminiHookToObserve(payload: Payload): ObserveEvent | undefined {
+  const sessionId = str(payload.session_id);
+  if (!sessionId) return undefined;
+  const session = `gemini:${sessionId}`;
+  switch (payload.hook_event_name) {
+    case "AfterTool": {
+      const response = typeof payload.tool_response === "object" && payload.tool_response !== null ? payload.tool_response : {};
+      const r = response as Record<string, unknown>;
+      const failed = r.error !== undefined && r.error !== null && r.error !== false;
+      const text = failed ? textOf(r.error) || textOf(r.llmContent) : textOf(r.llmContent);
+      return toolEvent(session, str(payload.tool_name) ?? "unknown", failed || GEMINI_SHELL_EXIT.test(text), text);
+    }
+    // PreCompress is deliberately not a compaction: Gemini CLI 0.62 fires it on every turn, before it checks whether
+    // the history is over the threshold, so it says nothing about whether the context was actually compacted.
+    case "BeforeAgent":
+      return { session, event: "prompt" };
+    default:
+      return undefined;
+  }
+}
+
 /** Map a native Codex hook payload. Codex carries no error flag on tool results, so errors are inferred from content. */
 export function codexHookToObserve(payload: Payload): ObserveEvent | undefined {
   const sessionId = str(payload.session_id);

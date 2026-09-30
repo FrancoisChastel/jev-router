@@ -20,7 +20,7 @@ jev-router sits between Claude Code, Codex, OpenCode, or Pi and your model gatew
 ## Requirements
 
 - Node 22 or later
-- One of the harnesses: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://opencode.ai), or [Pi](https://github.com/earendil-works/pi)
+- One of the harnesses: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://opencode.ai), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Pi](https://github.com/earendil-works/pi)
 - A key that can reach jev, for the judge: an [OpenRouter](https://openrouter.ai/keys) key or a [Vercel AI Gateway](https://vercel.com/ai-gateway) key. It also serves inference for harnesses that have no login of their own
 
 ## Quick start
@@ -32,7 +32,7 @@ jev-router setup
 
 `setup` asks once for a judge key (an OpenRouter or Vercel AI Gateway key; jev costs about $0.00003 a decision), finds your Claude Code and Codex logins and any gateway keys, writes `~/.jev-router/policy.json` with live prices, points every installed harness at the relay, installs the relay as a background service (launchd on macOS, systemd on Linux), and checks that it answers. Preview everything with `--dry-run`. `npx @french-castle/jev-router setup` works without a global install.
 
-Then use your harness as usual. Claude Code shows `auto (jev-router)` in `/model` and is set to it; Codex and OpenCode use the `auto` model; Pi runs the extension in-process. The pieces are also available one at a time: `init`, `ping`, `up`, `service`; see `jev-router help`.
+Then use your harness as usual. Claude Code shows `auto (jev-router)` in `/model` and is set to it; Codex and OpenCode use the `auto` model; Gemini CLI uses `jev-router/auto`; Pi runs the extension in-process. The pieces are also available one at a time: `init`, `ping`, `up`, `service`; see `jev-router help`.
 
 To undo it: `jev-router service uninstall` stops and removes the background relay, every harness file `setup` changed has a `.bak` copy next to it, and `~/.jev-router` holds the policy, the decision log, and the judge key file; delete it and the package is gone.
 
@@ -46,9 +46,11 @@ To undo it: `jev-router service uninstall` stops and removes the background rela
 | `TYPESAFE_API_KEY` only | jev direct from TypeSafe | none for the relay; the Pi extension still routes with Pi's own providers |
 | Claude Code logged in with a claude.ai plan (Pro, Max) | one of the keys above | your plan, through Claude Code's own login: Haiku, Sonnet, Opus |
 | Codex logged in with ChatGPT | one of the keys above | your plan, through Codex's own login: the models your plan lists |
+| `GEMINI_API_KEY` | not used for the judge | Gemini CLI only, on the Gemini API: flash-lite, flash, pro |
+| Gemini CLI logged in with Google | one of the keys above | Gemini CLI only, through its own login to Code Assist: flash-lite, flash, pro |
 | Ollama running locally | unchanged | a free `local` tier for auxiliary and compaction calls in OpenAI chat format |
 
-Logins are never copied or stored. The harness sends its own credentials, the relay forwards them unchanged to Anthropic or OpenAI and only chooses the model, and `init` reads nothing but the plan type to know which models to offer. Costs for plan-backed models are shown at API list prices, the same scale a plan's allowance is consumed on. As the plan's five-hour window fills (80%, then 95%), the router caps the tier so you do not hit the limit mid-task.
+Logins are never copied or stored. The harness sends its own credentials, the relay forwards them unchanged to Anthropic, OpenAI, or Google and only chooses the model, and `init` reads nothing but the plan type to know which models to offer. Costs for plan-backed models are shown at API list prices, the same scale a plan's allowance is consumed on. As the plan's five-hour window fills (80%, then 95%), the router caps the tier so you do not hit the limit mid-task.
 
 The generated policy has three candidates on models available on both gateways:
 
@@ -78,10 +80,11 @@ Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the 
 | Claude Code | Local relay via `ANTHROPIC_BASE_URL`, on your claude.ai login or a gateway key | Plugin hooks report tool successes and failures, compaction, subagents, API errors; gateway hint headers carry request class |
 | Codex | Local relay as a Responses-API model provider, on your ChatGPT login or a gateway key | Hooks report tool results, compaction, prompts |
 | OpenCode | Local relay as an OpenAI-compatible provider | Plugin tags requests with the session and reports tool results, compaction, API errors |
+| Gemini CLI | Local relay via `GOOGLE_GEMINI_BASE_URL` (API key) or `CODE_ASSIST_ENDPOINT` (Google login), model `jev-router/auto` | Tool results from the request body; with a Google login, hooks report tool results and prompts |
 | Pi | In-process extension, no relay | Everything: prompts, tool results, compaction, model changes |
 | Cursor (Chat and Agent) | A token-guarded relay published by `jev-router expose`, set as Cursor's OpenAI base URL; Tab and the Cursor CLI are not routed | The request body only: its tool results; no hooks |
 
-`jev-router setup` configures whichever of the first four are installed, backs up every file it touches, and keeps the relay running as a background service. Cursor calls the relay from its own servers, so `setup` prints its steps instead of writing files. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
+`jev-router setup` configures whichever of the first five are installed, backs up every file it touches, and keeps the relay running as a background service. Cursor calls the relay from its own servers, so `setup` prints its steps instead of writing files. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
 
 ## Measure before believing
 

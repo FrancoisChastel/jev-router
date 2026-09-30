@@ -40,6 +40,7 @@ export async function detectAgents(probe: AgentProbe): Promise<Agent[]> {
     ["opencode", [join(probe.home, ".config", "opencode")], ["opencode"]],
     ["pi", [join(probe.home, ".pi")], ["pi"]],
     ["cursor", [join(probe.home, ".cursor")], ["cursor", "cursor-agent"]],
+    ["gemini", [join(probe.home, ".gemini")], ["gemini"]],
   ];
   const found: Agent[] = [];
   for (const [agent, dirs, binaries] of checks) {

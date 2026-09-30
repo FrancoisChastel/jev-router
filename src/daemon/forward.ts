@@ -2,7 +2,7 @@ import type { EgressInput, Policy } from "../core/policy/types";
 import type { TokenUsage } from "../core/record";
 import type { FetchLike } from "../judge/http";
 import type { JsonObject } from "./dialects/types";
-import { copyResponseHeaders, errorBody, mergeUsage, sendJson, upstreamHeaders, usageLikeHeaders } from "./http-util";
+import { copyResponseHeaders, errorBody, mergeUsage, sendJson, upstreamHeaders, usageLikeHeaders, usageOf } from "./http-util";
 import type { PlanWindowStore } from "./plan-window";
 import type { RelayRequest } from "./relay";
 import { createSseTransform } from "./sse";
@@ -182,7 +182,8 @@ export async function deliver(
   let usage: TokenUsage | undefined;
   try {
     const json = JSON.parse(text) as JsonObject;
-    if (typeof json.usage === "object" && json.usage !== null) usage = mergeUsage(undefined, json.usage as Record<string, unknown>);
+    const raw = usageOf(json);
+    if (raw) usage = mergeUsage(undefined, raw);
     if (opts.requestedModel) out = JSON.stringify(r.dialect.echoModel(json, opts.requestedModel));
   } catch {
     /* not JSON: forward verbatim */

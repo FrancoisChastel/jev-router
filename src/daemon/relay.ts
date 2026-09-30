@@ -8,7 +8,7 @@ import type { FetchLike } from "../judge/http";
 import { runCascade } from "./cascade/run";
 import { cursorUpstreamPath, isResponsesShaped } from "./cursor";
 import { DIALECTS } from "./dialects";
-import { type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
+import { type Dialect, type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
 import { credentialsFor, defaultEgress, egressFor, forward, observePlan, type Target } from "./forward";
 import {
   copyResponseHeaders,
@@ -53,9 +53,43 @@ function findRoute(policy: Policy, id: string, harness: Harness): RouteInput | u
   return policy.routes.find((r) => r.id === "*");
 }
 
-/** The request as it should leave for `target`: only Cursor traffic has its path adjusted. */
-function forTarget(r: RelayRequest, harness: Harness, target: Target): RelayRequest {
-  return harness === "cursor" ? { ...r, path: cursorUpstreamPath(target.egress.base_url, r.path) } : r;
+/**
+ * The request as it should leave for `target`, serving `decision` when routed: Cursor traffic to OpenRouter takes its
+ * Cursor path, and a dialect that carries the model in the path (Gemini) gets the decided model there.
+ */
+function forTarget(r: RelayRequest, harness: Harness, target: Target, decision?: Decision): RelayRequest {
+  const path = harness === "cursor" ? cursorUpstreamPath(target.egress.base_url, r.path) : r.path;
+  const routed = decision && r.dialect.rewritePath ? r.dialect.rewritePath(path, decision) : path;
+  return routed === r.path ? r : { ...r, path: routed };
+}
+
+const isGeminiDialect = (d: Dialect): boolean => d === "gemini" || d === "gemini-code-assist";
+
+/** Only Gemini clients speak the Gemini dialects, so an unrecognised caller there is treated as Gemini CLI. */
+function harnessOf(r: RelayRequest): Harness {
+  const detected = detectHarness(r.headers);
+  return detected === "unknown" && isGeminiDialect(r.dialect.dialect) ? "gemini" : detected;
+}
+
+/** Whether an egress accepts this wire format: egresses without a `dialects` list accept every format. */
+const accepts = (egress: EgressInput, dialect: Dialect): boolean => !egress.dialects || egress.dialects.includes(dialect);
+
+/**
+ * Where an unrouted request goes: the egress it arrived under; else an egress that accepts its wire format, preferring
+ * the one this harness's own `auto` route uses (no gateway serves the Gemini dialects, so a Gemini request must reach
+ * Google, and a Claude or OpenAI request must never land on a Google-only egress).
+ */
+function passthroughEgress(policy: Policy, r: RelayRequest, harness: Harness, dialect: Dialect): Target | undefined {
+  const mounted = r.egressName ? policy.egress[r.egressName] : undefined;
+  if (mounted && r.egressName) return { name: r.egressName, egress: mounted };
+  const route = findRoute(policy, "auto", harness);
+  const def = route?.harness === harness ? policy.policies[route.policy] : undefined;
+  const preferred = def ? egressFor(policy, policy.candidates[def.default]) : undefined;
+  if (preferred && accepts(preferred.egress, dialect)) return preferred;
+  const fallback = defaultEgress(policy);
+  if (fallback && accepts(fallback.egress, dialect)) return fallback;
+  const name = Object.keys(policy.egress).find((n) => accepts(policy.egress[n] as EgressInput, dialect));
+  return name ? { name, egress: policy.egress[name] as EgressInput } : undefined;
 }
 
 /** How to read and rewrite the body: by its shape when a Responses body arrives on the chat path (Cursor does this). */
@@ -92,15 +126,14 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     return;
   }
 
-  const harness = detectHarness(r.headers);
+  const harness = harnessOf(r);
   const shape = bodyDialect(r, body);
-  const normalized = shape.normalize(body);
+  const normalized = shape.normalize(body, r.path);
   const route = findRoute(policy, normalized.requestedModel, harness);
 
-  // Unknown model ids pass straight through to the default egress with credentials swapped and nothing rewritten.
+  // Unknown model ids pass straight through with credentials swapped and nothing rewritten.
   if (!route) {
-    const mounted = r.egressName ? policy.egress[r.egressName] : undefined;
-    const target = mounted && r.egressName ? { name: r.egressName, egress: mounted } : defaultEgress(policy);
+    const target = passthroughEgress(policy, r, harness, shape.dialect);
     if (!target) {
       sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, "no egress configured for passthrough"));
       return;
@@ -110,7 +143,7 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
   }
 
   const digest = createHash("sha256").update(normalized.prefixDigestInput).digest("hex").slice(0, 32);
-  const { key: sessionKey } = resolveSessionKey(r.headers, digest);
+  const { key: sessionKey } = resolveSessionKey(r.headers, digest, normalized.sessionKey);
 
   if (r.countTokens) {
     // Use the model this session is currently on (or the policy default) so the count matches the tokenizer in use.
@@ -154,12 +187,15 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
       config: cascade,
       decided,
       shape,
-      toTarget: (target) => forTarget(r, harness, target),
+      toTarget: (target, decision) => forTarget(r, harness, target, decision),
       routingHeaders: (served) => routingHeaders(served, decided.decision),
     });
     return;
   }
-  await serveDecision(deps, r, body, normalized.requestedModel, decided, { shape, toTarget: (target) => forTarget(r, harness, target) });
+  await serveDecision(deps, r, body, normalized.requestedModel, decided, {
+    shape,
+    toTarget: (target, decision) => forTarget(r, harness, target, decision),
+  });
 }
 
 function routingHeaders(served: Decision, decision: Decision): Record<string, string> {
@@ -174,7 +210,7 @@ function routingHeaders(served: Decision, decision: Decision): Record<string, st
 /** How a routed body is read and rewritten, and how the request is addressed to each egress. */
 interface Addressing {
   readonly shape: DialectAdapter;
-  readonly toTarget: (target: Target) => RelayRequest;
+  readonly toTarget: (target: Target, decision: Decision) => RelayRequest;
 }
 
 /** Forward a routed request once, on the decided candidate or, in shadow mode, on the shadow candidate. */
@@ -197,7 +233,7 @@ async function serveDecision(
     return;
   }
   const served = shadow && candidate ? { ...decided.decision, candidate: servedId, model: candidate.model } : decided.decision;
-  await forward(deps, addressing.toTarget(target), target, addressing.shape.rewrite(body, served), {
+  await forward(deps, addressing.toTarget(target, served), target, addressing.shape.rewrite(body, served), {
     source: shadow ? "shadow" : decided.decision.source,
     requestedModel,
     extraHeaders: routingHeaders(served, decided.decision),
@@ -216,6 +252,8 @@ export interface ProxyRequest {
   readonly clientGone?: AbortSignal;
   /** Rewrites a complete JSON response body before it is sent; streams and non-JSON bodies pass untouched. */
   readonly transformJson?: (json: JsonObject) => JsonObject;
+  /** Dialect whose key header an injected API key goes in; defaults to bearer plus `x-api-key`. */
+  readonly keyDialect?: Dialect;
 }
 
 /**
@@ -236,7 +274,7 @@ export async function proxy(
   const forwardAuth = target.egress.forward_auth === true;
   const url = `${target.egress.base_url.replace(/\/+$/, "")}${p.path}${p.query}`;
   // "anthropic" makes upstreamHeaders inject both bearer and x-api-key when a key is used; harmless elsewhere.
-  const headers = upstreamHeaders(p.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: "anthropic" });
+  const headers = upstreamHeaders(p.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: p.keyDialect ?? "anthropic" });
   const hasBody = p.rawBody !== undefined && p.rawBody !== "" && p.method !== "GET" && p.method !== "HEAD";
   if (!hasBody) delete headers["content-type"];
   const abort = new AbortController();

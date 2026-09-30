@@ -15,6 +15,8 @@ export interface NormalizedBody {
   readonly stream: boolean;
   /** System prompt plus first user text: the input of the prefix digest used as a session key fallback. */
   readonly prefixDigestInput: string;
+  /** Session key carried in the body itself (Gemini's Code Assist backend sends one); preferred over the prefix digest. */
+  readonly sessionKey?: string;
 }
 
 export type JsonObject = Record<string, unknown>;
@@ -23,9 +25,12 @@ export interface DialectAdapter {
   readonly dialect: Dialect;
   /** Upstream path relative to an egress base URL. */
   readonly path: string;
-  normalize(body: JsonObject): NormalizedBody;
+  /** `path` is the request path below the egress base URL, for dialects that carry the model there. */
+  normalize(body: JsonObject, path?: string): NormalizedBody;
   /** Returns a new body with the model and, where the dialect allows, the effort rewritten. Nothing else changes. */
   rewrite(body: JsonObject, decision: Decision): JsonObject;
+  /** Upstream path for a routed request, for dialects whose model lives in the path. Identity when absent. */
+  rewritePath?(path: string, decision: Decision): string;
   /** Returns a new JSON response with the requested model id echoed back. */
   echoModel(json: JsonObject, requestedModel: string): JsonObject;
 }

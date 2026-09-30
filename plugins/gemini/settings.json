@@ -1,0 +1,6 @@
+{
+  "hooks": {
+    "AfterTool": [{ "hooks": [{ "type": "command", "command": "jev-router hook gemini", "timeout": 5000 }] }],
+    "BeforeAgent": [{ "hooks": [{ "type": "command", "command": "jev-router hook gemini", "timeout": 5000 }] }]
+  }
+}

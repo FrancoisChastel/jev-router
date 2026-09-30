@@ -113,6 +113,36 @@ function responsesObject(acc: ReplySummary, response: JsonObject): ReplySummary 
 
 const RESPONSE_SNAPSHOTS: ReadonlySet<string> = new Set(["response.completed", "response.incomplete", "response.failed"]);
 
+/** Gemini finish reasons that mean the model declined, mapped to the refusal fact. */
+const GEMINI_REFUSALS: ReadonlySet<string> = new Set(["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"]);
+/** Gemini's word for a length cut, mapped onto the stop reason the truncation check knows. */
+const GEMINI_STOPS: Readonly<Record<string, string>> = { MAX_TOKENS: "max_tokens" };
+
+function geminiPart(acc: ReplySummary, part: JsonObject): ReplySummary {
+  if (isObject(part.functionCall)) return { ...acc, toolCall: true };
+  return part.thought === true ? acc : { ...acc, text: acc.text + str(part.text) };
+}
+
+function geminiCandidate(acc: ReplySummary, candidate: JsonObject): ReplySummary {
+  const next = list(isObject(candidate.content) ? candidate.content.parts : undefined).reduce(geminiPart, acc);
+  const reason = asString(candidate.finishReason);
+  if (!reason) return next;
+  const stop = GEMINI_STOPS[reason] ?? reason.toLowerCase();
+  return { ...next, stop, ...(GEMINI_REFUSALS.has(reason) ? { refusal: next.refusal || reason.toLowerCase() } : {}) };
+}
+
+/**
+ * One Gemini stream chunk or a whole response; the Code Assist backend wraps either in `response`. A prompt the API
+ * blocked outright carries `promptFeedback.blockReason` and no candidates.
+ */
+export const foldGemini: Fold = (acc, obj) => {
+  const inner = isObject(obj.response) ? obj.response : obj;
+  let next = obj.error !== undefined && obj.error !== null ? { ...acc, error: errorText(obj.error) } : acc;
+  next = list(inner.candidates).reduce(geminiCandidate, next);
+  const blocked = isObject(inner.promptFeedback) ? asString(inner.promptFeedback.blockReason) : undefined;
+  return blocked ? { ...next, refusal: next.refusal || blocked.toLowerCase() } : next;
+};
+
 /** One OpenAI Responses stream event, or a whole non-stream response. */
 export const foldResponses: Fold = (acc, obj) => {
   const type = str(obj.type);

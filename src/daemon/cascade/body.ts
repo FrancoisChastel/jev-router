@@ -36,7 +36,7 @@ export function usageFromBody(isStream: boolean, text: string): TokenUsage | und
   const objects = isStream ? sseDataObjects(text) : [jsonObject(text)].filter(isObject);
   let usage: TokenUsage | undefined;
   for (const obj of objects) {
-    const u = isStream ? usageOf(obj) : isObject(obj.usage) ? obj.usage : undefined;
+    const u = usageOf(obj);
     if (u) usage = mergeUsage(usage, u);
   }
   return usage;
