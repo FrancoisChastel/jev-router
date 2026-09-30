@@ -37,7 +37,16 @@ const DEFAULTS = {
 const ACTION_KEYS: ReadonlySet<string> = new Set(["pin", "at_least", "up", "allow_down", "effort", "hold_turns"]);
 const TOOL_CLASSES: ReadonlySet<string> = new Set(["observe", "mutate", "plan", "new", "shell", "other"]);
 const TRANSPORTS: ReadonlySet<string> = new Set(["typesafe", "vercel", "openrouter", "mock"]);
-const HARNESSES: ReadonlySet<string> = new Set<Harness | "any">(["pi", "claude-code", "codex", "opencode", "hermes", "unknown", "any"]);
+const HARNESSES: ReadonlySet<string> = new Set<Harness | "any">([
+  "pi",
+  "claude-code",
+  "codex",
+  "opencode",
+  "cursor",
+  "hermes",
+  "unknown",
+  "any",
+]);
 
 function fail(message: string): never {
   throw new PolicyError(message);

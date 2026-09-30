@@ -78,8 +78,9 @@ Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the 
 | Codex | Local relay as a Responses-API model provider, on your ChatGPT login or a gateway key | Hooks report tool results, compaction, prompts |
 | OpenCode | Local relay as an OpenAI-compatible provider | Plugin tags requests with the session and reports tool results, compaction, API errors |
 | Pi | In-process extension, no relay | Everything: prompts, tool results, compaction, model changes |
+| Cursor (Chat and Agent) | A token-guarded relay published by `jev-router expose`, set as Cursor's OpenAI base URL; Tab and the Cursor CLI are not routed | The request body only: its tool results; no hooks |
 
-`jev-router setup` configures whichever of the four are installed, backs up every file it touches, and keeps the relay running as a background service. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
+`jev-router setup` configures whichever of the first four are installed, backs up every file it touches, and keeps the relay running as a background service. Cursor calls the relay from its own servers, so `setup` prints its steps instead of writing files. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
 
 ## Measure before believing
 
