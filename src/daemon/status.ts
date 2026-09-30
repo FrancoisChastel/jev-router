@@ -2,6 +2,7 @@ import { estimateCostUsd } from "../core/cost";
 import type { Policy } from "../core/policy/types";
 import type { DecisionRecord } from "../core/record";
 import type { Effort } from "../core/types";
+import { recordCostUsd, servedCandidate, servedUsage } from "../measure/stats";
 import type { PlanWindow } from "./plan-window";
 
 /** The last decision of one session, as `GET /status` reports it. Content-free like the decision log. */
@@ -43,10 +44,11 @@ const localDay = (ts: number): string => {
 
 /** Observed cost and the saving against the priciest candidate the decision could have used. Undefined without usage. */
 export function costAndSaving(record: DecisionRecord, policy: Policy): { readonly costUsd: number; readonly savedUsd: number } | undefined {
-  const usage = record.usage;
-  const served = policy.candidates[record.shadow?.served ?? record.decision.candidate];
-  if (!usage || !served) return undefined;
-  const costUsd = estimateCostUsd(served, usage.inputTokens, usage.outputTokens);
+  // A cascade bills every attempt; the alternatives are priced on the answer the client got, as `stats` does.
+  const usage = servedUsage(record);
+  const served = policy.candidates[servedCandidate(record)];
+  if (!record.usage || !usage || !served) return undefined;
+  const costUsd = recordCostUsd(record, policy);
   const alternatives = Object.keys(record.decision.counterfactuals)
     .map((id) => policy.candidates[id])
     .filter((c) => c !== undefined)

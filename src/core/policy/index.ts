@@ -1,6 +1,7 @@
 import { knownIdentifiers } from "../context-keys";
 import { SINGLE_AXIS_CONFIDENCE } from "../signals/stage";
 import { EFFORT_ORDER, type Effort, type Harness, WIRE_DIALECTS } from "../types";
+import { validateCascade } from "./cascade";
 import { type CompiledExpr, compileExpr, ExprError } from "./expr";
 import type {
   Candidate,
@@ -15,6 +16,7 @@ import type {
   RuleAction,
 } from "./types";
 
+export { CASCADE_TRIGGERS } from "./cascade";
 export type { CompiledExpr, ExprContext, ExprValue } from "./expr";
 export { compileExpr, ExprError, evaluateExpr } from "./expr";
 export type * from "./types";
@@ -197,6 +199,7 @@ function validatePolicyDef(
     rules,
     switch: { cache_penalty: sw.cache_penalty === true, prefer_effort_over_model: sw.prefer_effort_over_model === true },
     tool_semantics: tool_semantics as PolicyDef["tool_semantics"],
+    cascade: validateCascade(def.cascade, where, fail),
   };
 }
 

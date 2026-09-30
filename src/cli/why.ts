@@ -1,5 +1,6 @@
 import type { Policy } from "../core/policy/types";
-import type { DecisionRecord } from "../core/record";
+import type { CascadeRecord, DecisionRecord } from "../core/record";
+import { cascadeHeader } from "../daemon/cascade/trace";
 import { costAndSaving } from "../daemon/status";
 import type { Answer } from "../judge/types";
 
@@ -64,16 +65,15 @@ function costLines(r: DecisionRecord, policy: Policy | undefined): string[] {
   return lines;
 }
 
-/** Compact one-line JSON for fields this version does not model, such as a cascade trace. */
-const compact = (v: unknown): string => {
-  const s = JSON.stringify(v);
-  return s.length > 300 ? `${s.slice(0, 297)}...` : s;
-};
+/** The cascade's hops as in the `x-jev-router-cascade` header, then each attempt's outcome and list-price cost. */
+function cascadeLine(c: CascadeRecord): string {
+  const attempts = c.attempts.map((a) => `${a.candidate} ${a.outcome}${a.costUsd !== undefined ? ` ${usd(a.costUsd)}` : ""}`);
+  return `cascade   ${cascadeHeader(c)}  [${attempts.join(", ")}]`;
+}
 
 export function formatDecision(r: DecisionRecord, policy?: Policy): string {
   const d = r.decision;
-  const served = r.shadow ? `  (shadow: served ${r.shadow.served})` : "";
-  const cascade = (r as unknown as { readonly cascade?: unknown }).cascade;
+  const served = r.shadow ? `  (shadow: served ${r.shadow.served})` : r.cascade ? `  (served ${r.cascade.served})` : "";
   const lines = [
     `${new Date(r.ts).toISOString()}  ${r.session}  turn ${r.turn}${r.requestClass ? `  ${r.requestClass}` : ""}${r.isNewUserTurn ? "  user turn" : ""}`,
     `decision  ${d.candidate} -> ${d.model}${d.effort ? ` (${d.effort})` : ""}  via ${d.source}${d.confidence !== undefined ? ` @${d.confidence.toFixed(2)}` : ""}${served}`,
@@ -83,7 +83,7 @@ export function formatDecision(r: DecisionRecord, policy?: Policy): string {
     r.plan
       ? `plan      ${[r.plan.fiveHour !== undefined ? `5h ${pct(r.plan.fiveHour)}` : undefined, r.plan.sevenDay !== undefined ? `7d ${pct(r.plan.sevenDay)}` : undefined].filter(Boolean).join("  ")}`
       : undefined,
-    cascade !== undefined ? `cascade   ${compact(cascade)}` : undefined,
+    r.cascade ? cascadeLine(r.cascade) : undefined,
     r.apply && !r.apply.ok ? `apply     failed${r.apply.error ? `: ${r.apply.error}` : ""}` : undefined,
   ];
   return lines.filter((l): l is string => l !== undefined).join("\n");

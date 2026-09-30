@@ -59,10 +59,17 @@ describe("why", () => {
   test("shows a cascade trace when the record carries one, and apply failures", () => {
     const withCascade = {
       ...record({ apply: { ok: false, error: "upstream responded 529" } }),
-      cascade: { tried: ["fast"], escalated: "mid" },
+      cascade: {
+        attempts: [
+          { candidate: "fast", model: "openai/gpt-5.4-mini", outcome: "empty", costUsd: 0.0002 },
+          { candidate: "mid", model: "anthropic/claude-sonnet-5", outcome: "served" },
+        ],
+        served: "mid",
+      },
     };
     const text = formatDecision(withCascade as DecisionRecord);
-    expect(text).toContain('cascade   {"tried":["fast"],"escalated":"mid"}');
+    expect(text).toContain("(served mid)");
+    expect(text).toContain("cascade   fast->mid (empty)  [fast empty $0.000200, mid served]");
     expect(text).toContain("apply     failed: upstream responded 529");
     // Without a policy the cost line keeps tokens only.
     expect(text).toContain("usage     10000 in / 1000 out\n");

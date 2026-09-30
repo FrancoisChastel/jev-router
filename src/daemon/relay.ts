@@ -1,27 +1,27 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Candidate, EgressInput, Policy, RouteInput } from "../core/policy/types";
-import type { TokenUsage } from "../core/record";
+import { nextTier } from "../core/escalate";
+import type { EgressInput, Policy, RouteInput } from "../core/policy/types";
 import { resolveSessionKey } from "../core/session";
-import type { Harness } from "../core/types";
+import type { Decision, Harness } from "../core/types";
 import type { FetchLike } from "../judge/http";
+import { runCascade } from "./cascade/run";
 import { cursorUpstreamPath, isResponsesShaped } from "./cursor";
 import { DIALECTS } from "./dialects";
 import { type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
+import { credentialsFor, defaultEgress, egressFor, forward, observePlan, type Target } from "./forward";
 import {
   copyResponseHeaders,
   detectHarness,
   errorBody,
   type Headers,
-  mergeUsage,
   requestClassOf,
   sendJson,
   upstreamHeaders,
   usageLikeHeaders,
 } from "./http-util";
 import type { PlanWindowStore } from "./plan-window";
-import type { RouterService } from "./service";
-import { createSseTransform } from "./sse";
+import type { Decided, RouterService } from "./service";
 
 export interface RelayDeps {
   readonly policy: Policy;
@@ -33,24 +33,6 @@ export interface RelayDeps {
   /** Receives the usage-window headers of every response from a plan-billed egress. */
   readonly planWindows?: PlanWindowStore;
   readonly now?: () => number;
-}
-
-/** Record the plan window a subscription egress reported on this response. Never throws into the response path. */
-function observePlan(deps: RelayDeps, name: string, egress: EgressInput, upstream: Response): void {
-  if (!deps.planWindows || egress.billing !== "subscription") return;
-  try {
-    deps.planWindows.update(name, (h) => upstream.headers.get(h), (deps.now ?? Date.now)());
-  } catch (e) {
-    console.error(`jev-router: plan window not recorded: ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-/** A key from the egress's environment variable, or nothing when the egress forwards the caller's or needs none. */
-function credentialsFor(deps: RelayDeps, name: string, egress: EgressInput): { readonly apiKey?: string; readonly error?: string } {
-  const apiKey = egress.api_key_env ? deps.env[egress.api_key_env] : undefined;
-  if (apiKey) return { apiKey };
-  if (egress.forward_auth === true || egress.no_auth === true) return {};
-  return { error: `egress '${name}' has no API key in $${egress.api_key_env ?? "(unset)"}` };
 }
 
 const CHARS_PER_TOKEN = 4;
@@ -70,18 +52,6 @@ function findRoute(policy: Policy, id: string, harness: Harness): RouteInput | u
   }
   return policy.routes.find((r) => r.id === "*");
 }
-
-function defaultEgress(policy: Policy): { readonly name: string; readonly egress: EgressInput } | undefined {
-  const name = Object.keys(policy.egress)[0];
-  return name ? { name, egress: policy.egress[name] as EgressInput } : undefined;
-}
-
-function egressFor(policy: Policy, candidate: Candidate | undefined): { readonly name: string; readonly egress: EgressInput } | undefined {
-  if (candidate?.via && policy.egress[candidate.via]) return { name: candidate.via, egress: policy.egress[candidate.via] as EgressInput };
-  return defaultEgress(policy);
-}
-
-type Target = { readonly name: string; readonly egress: EgressInput };
 
 /** The request as it should leave for `target`: only Cursor traffic has its path adjusted. */
 function forTarget(r: RelayRequest, harness: Harness, target: Target): RelayRequest {
@@ -173,6 +143,50 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     // The body's own shape, which is what the upstream must read (Cursor sends Responses bodies on the chat path).
     dialect: shape.dialect,
   });
+  const cascade = policy.policies[route.policy]?.cascade;
+  if (cascade?.enabled && !deps.shadow && nextTier(policy, route.policy, decided.request, decided.decision)) {
+    await runCascade({
+      deps,
+      r,
+      body,
+      requestedModel: normalized.requestedModel,
+      policyId: route.policy,
+      config: cascade,
+      decided,
+      shape,
+      toTarget: (target) => forTarget(r, harness, target),
+      routingHeaders: (served) => routingHeaders(served, decided.decision),
+    });
+    return;
+  }
+  await serveDecision(deps, r, body, normalized.requestedModel, decided, { shape, toTarget: (target) => forTarget(r, harness, target) });
+}
+
+function routingHeaders(served: Decision, decision: Decision): Record<string, string> {
+  return {
+    "x-jev-router-model": served.model,
+    "x-jev-router-candidate": served.candidate,
+    "x-jev-router-decision": decision.candidate,
+    ...(served.effort ? { "x-jev-router-effort": served.effort } : {}),
+  };
+}
+
+/** How a routed body is read and rewritten, and how the request is addressed to each egress. */
+interface Addressing {
+  readonly shape: DialectAdapter;
+  readonly toTarget: (target: Target) => RelayRequest;
+}
+
+/** Forward a routed request once, on the decided candidate or, in shadow mode, on the shadow candidate. */
+async function serveDecision(
+  deps: RelayDeps,
+  r: RelayRequest,
+  body: JsonObject,
+  requestedModel: string,
+  decided: Decided,
+  addressing: Addressing,
+): Promise<void> {
+  const { policy } = deps;
   const servedId = deps.shadow && policy.candidates[deps.shadow] ? deps.shadow : decided.decision.candidate;
   const candidate = policy.candidates[servedId];
   const shadow = servedId !== decided.decision.candidate || deps.shadow ? { served: servedId } : undefined;
@@ -183,16 +197,10 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     return;
   }
   const served = shadow && candidate ? { ...decided.decision, candidate: servedId, model: candidate.model } : decided.decision;
-  const rewritten = shape.rewrite(body, served);
-  await forward(deps, forTarget(r, harness, target), target, rewritten, {
+  await forward(deps, addressing.toTarget(target), target, addressing.shape.rewrite(body, served), {
     source: shadow ? "shadow" : decided.decision.source,
-    requestedModel: normalized.requestedModel,
-    extraHeaders: {
-      "x-jev-router-model": served.model,
-      "x-jev-router-candidate": servedId,
-      "x-jev-router-decision": decided.decision.candidate,
-      ...(served.effort ? { "x-jev-router-effort": served.effort } : {}),
-    },
+    requestedModel,
+    extraHeaders: routingHeaders(served, decided.decision),
     onDone: (ok, usage, error) => decided.commit(ok ? { ok: true } : { ok: false, ...(error ? { error } : {}) }, usage, shadow),
   });
 }
@@ -282,139 +290,4 @@ export async function proxy(
     p.res.destroy();
   }
   finished = true;
-}
-
-interface ForwardOptions {
-  readonly source: string;
-  /** When set, the client's model id is echoed back in place of the upstream's. Absent for passthrough. */
-  readonly requestedModel?: string;
-  readonly extraHeaders?: Record<string, string>;
-  readonly onDone?: (ok: boolean, usage: TokenUsage | undefined, error?: string) => void;
-}
-
-async function forward(
-  deps: RelayDeps,
-  r: RelayRequest,
-  target: { readonly name: string; readonly egress: EgressInput },
-  body: JsonObject,
-  opts: ForwardOptions,
-): Promise<void> {
-  /** Never let a throwing log or store callback break the response path, and never call it twice. */
-  let called = false;
-  const done = (ok: boolean, usage: TokenUsage | undefined, error?: string) => {
-    if (called) return;
-    called = true;
-    try {
-      opts.onDone?.(ok, usage, error);
-    } catch (e) {
-      console.error(`jev-router: onDone callback failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
-  const creds = credentialsFor(deps, target.name, target.egress);
-  if (creds.error) {
-    done(false, undefined, creds.error);
-    sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, `egress '${target.name}' has no API key configured`));
-    return;
-  }
-  const apiKey = creds.apiKey;
-  const forwardAuth = target.egress.forward_auth === true;
-  const url = `${target.egress.base_url.replace(/\/+$/, "")}${r.path}${r.query}`;
-  const headers = upstreamHeaders(r.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: r.dialect.dialect });
-  const abort = new AbortController();
-  let finished = false;
-  const onClientGone = () => {
-    if (!finished) abort.abort();
-  };
-  if (r.clientGone?.aborted) onClientGone();
-  r.clientGone?.addEventListener("abort", onClientGone, { once: true });
-  const clientDisconnected = () => r.clientGone?.aborted === true;
-
-  let upstream: Response;
-  try {
-    upstream = await deps.fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: abort.signal });
-  } catch (e) {
-    finished = true;
-    const message = e instanceof Error ? e.message : String(e);
-    done(false, undefined, `upstream unreachable: ${message}`);
-    if (!r.res.headersSent) sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, `upstream unreachable: ${message}`));
-    return;
-  }
-
-  if (process.env.JEV_ROUTER_DEBUG_SSE)
-    console.error(
-      `jev-router forward: ${upstream.status} content-type=${upstream.headers.get("content-type")} requestedModel=${opts.requestedModel ?? "(none)"} body=${upstream.body ? "yes" : "no"}`,
-    );
-  if (process.env.JEV_ROUTER_DEBUG_HEADERS)
-    for (const [k, v] of usageLikeHeaders(upstream.headers)) console.error(`jev-router headers: ${target.name} ${k}: ${v}`);
-  observePlan(deps, target.name, target.egress, upstream);
-  r.res.statusCode = upstream.status;
-  copyResponseHeaders(upstream, r.res);
-  r.res.setHeader("x-jev-router-source", opts.source);
-  r.res.setHeader("x-jev-router-egress", target.name);
-  for (const [k, v] of Object.entries(opts.extraHeaders ?? {})) r.res.setHeader(k, v);
-
-  const requestedModel = opts.requestedModel;
-  const contentType = upstream.headers.get("content-type") ?? "";
-
-  if (!upstream.ok || !upstream.body) {
-    const text = await upstream.text();
-    r.res.setHeader("content-length", Buffer.byteLength(text));
-    r.res.end(text);
-    finished = true;
-    done(false, undefined, `upstream responded ${upstream.status}`);
-    return;
-  }
-
-  // Some upstreams (chatgpt.com's Codex backend among them) stream without a content-type; the request asked for a
-  // stream, so treat the body as one rather than buffering it to the end.
-  const isStream = contentType.includes("text/event-stream") || (contentType === "" && body.stream === true);
-  if (isStream) {
-    let usage: TokenUsage | undefined;
-    let terminalSeen = false;
-    const stream = requestedModel
-      ? upstream.body.pipeThrough(
-          createSseTransform({
-            requestedModel,
-            onUsage: (u) => {
-              usage = mergeUsage(usage, u);
-            },
-            onTerminal: () => {
-              terminalSeen = true;
-            },
-          }),
-        )
-      : upstream.body;
-    r.res.flushHeaders();
-    let streamError: string | undefined;
-    try {
-      for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) r.res.write(chunk);
-      r.res.end();
-    } catch (e) {
-      // A client that hangs up after the terminal event (Codex does) got everything it asked for; only a hang-up
-      // before that, or an upstream fault, is a failed delivery.
-      if (clientDisconnected() && terminalSeen) r.res.end();
-      else {
-        streamError = clientDisconnected() ? "client disconnected" : `stream interrupted: ${e instanceof Error ? e.message : String(e)}`;
-        r.res.destroy();
-      }
-    }
-    finished = true;
-    done(streamError === undefined, usage, streamError);
-    return;
-  }
-
-  const text = await upstream.text();
-  finished = true;
-  let out = text;
-  let usage: TokenUsage | undefined;
-  try {
-    const json = JSON.parse(text) as JsonObject;
-    if (typeof json.usage === "object" && json.usage !== null) usage = mergeUsage(undefined, json.usage as Record<string, unknown>);
-    if (requestedModel) out = JSON.stringify(r.dialect.echoModel(json, requestedModel));
-  } catch {
-    /* not JSON: forward verbatim */
-  }
-  r.res.setHeader("content-length", Buffer.byteLength(out));
-  r.res.end(out);
-  done(true, usage);
 }

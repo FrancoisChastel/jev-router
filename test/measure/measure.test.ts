@@ -57,6 +57,27 @@ describe("stats", () => {
     expect(s.byCandidate.frontier).toBe(1);
   });
 
+  test("a cascade charges every attempt, while baselines price only the answer the client got", () => {
+    const failed = { inputTokens: 1_000_000, outputTokens: 0 };
+    const answer = { inputTokens: 1_000_000, outputTokens: 1_000_000 };
+    const cascaded: DecisionRecord = {
+      ...rec({ candidate: "fast", inTok: 2_000_000, outTok: 1_000_000 }),
+      cascade: {
+        attempts: [
+          { candidate: "fast", model: "openai/gpt-5.4-mini", outcome: "empty", usage: failed, costUsd: 0.15 },
+          { candidate: "mid", model: "anthropic/claude-sonnet-5", outcome: "served", usage: answer, costUsd: 18 },
+        ],
+        served: "mid",
+      },
+    };
+    const s = summarize([cascaded], policy);
+    // fast attempt: 1M in * 0.15 = 0.15 ; mid attempt: 1M in * 3 + 1M out * 15 = 18
+    expect(s.actualCostUsd).toBeCloseTo(18.15, 6);
+    expect(s.baselines.mid!.costUsd).toBeCloseTo(18, 6);
+    expect(s.baselines.fast!.costUsd).toBeCloseTo(0.75, 6);
+    expect(s.cascades).toEqual({ requests: 1, retries: 1, discardedCostUsd: expect.closeTo(0.15, 6) as unknown as number });
+  });
+
   test("records without usage are counted but excluded from cost", () => {
     const withUsage = rec({ candidate: "fast", inTok: 1000, outTok: 100 });
     const { usage: _u, ...without } = rec({ candidate: "mid", inTok: 0, outTok: 0 });

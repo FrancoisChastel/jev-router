@@ -1,9 +1,26 @@
 import { type Concluded, plan } from "../core/decide";
+import { reassignServed } from "../core/escalate";
 import type { Policy } from "../core/policy/types";
-import { type ApplyOutcome, buildDecisionRecord, type DecisionRecord, type JudgeTrace, type TokenUsage } from "../core/record";
+import {
+  type ApplyOutcome,
+  buildDecisionRecord,
+  type CascadeRecord,
+  type DecisionRecord,
+  type JudgeTrace,
+  type TokenUsage,
+} from "../core/record";
 import { emptySession, withUsage } from "../core/session";
 import { type StageScore, scoreStage } from "../core/signals/stage";
-import type { Decision, Harness, NormalizedRequest, PlanUtilization, RequestClass, ToolOutcome, WireDialect } from "../core/types";
+import type {
+  Decision,
+  Harness,
+  NormalizedRequest,
+  PlanUtilization,
+  RequestClass,
+  SessionState,
+  ToolOutcome,
+  WireDialect,
+} from "../core/types";
 import type { Judge } from "../judge/types";
 import type { NormalizedBody } from "./dialects/types";
 import type { PlanWindowStore } from "./plan-window";
@@ -26,8 +43,11 @@ export interface Decided {
   readonly decision: Decision;
   readonly judge?: JudgeTrace;
   readonly stage: StageScore;
-  /** Persist the session when the decision took effect, and log the record either way. */
-  commit(apply: ApplyOutcome, usage?: TokenUsage, shadow?: { readonly served: string }): DecisionRecord;
+  /**
+   * Persist the session when the decision took effect, and log the record either way. With a cascade, the tier that
+   * finally served becomes the session's current assignment.
+   */
+  commit(apply: ApplyOutcome, usage?: TokenUsage, shadow?: { readonly served: string }, cascade?: CascadeRecord): DecisionRecord;
 }
 
 export interface RouterServiceDeps {
@@ -51,6 +71,16 @@ export function planEgressFor(policy: Policy, policyId: string, current: string 
   const id = current && def.order.includes(current) ? current : def.default;
   const name = policy.candidates[id]?.via ?? Object.keys(policy.egress)[0];
   return name && policy.egress[name]?.billing === "subscription" ? name : undefined;
+}
+
+function afterCascade(session: SessionState, cascade: CascadeRecord): SessionState {
+  const served = cascade.attempts.find((a) => a.candidate === cascade.served);
+  return reassignServed(session, cascade.served, served?.effort);
+}
+
+function servedAttemptUsage(cascade: CascadeRecord, total: TokenUsage | undefined): TokenUsage | undefined {
+  const served = [...cascade.attempts].reverse().find((a) => a.candidate === cascade.served);
+  return served ? served.usage : total;
 }
 
 /** Shared decision path for the relay and the /decide endpoint. Holds no per-request state itself. */
@@ -128,23 +158,26 @@ export class RouterService {
       decision: concluded.decision,
       ...(trace ? { judge: trace } : {}),
       stage,
-      commit: (apply, usage, shadow) => {
+      commit: (apply, usage, shadow, cascade) => {
+        const session = cascade ? afterCascade(concluded.session, cascade) : concluded.session;
         if (apply.ok) {
-          // Core decides from numbers only; the daemon supplies what the upstream reported for this call.
-          store.set(input.sessionKey, withUsage(concluded.session, usage));
+          // Core decides from numbers only; the daemon supplies what the upstream reported for this call. After a
+          // cascade that is the served attempt, whose model the session continues on.
+          store.set(input.sessionKey, withUsage(session, cascade ? servedAttemptUsage(cascade, usage) : usage));
           store.clearPending(input.sessionKey, pending);
         }
         const record = buildDecisionRecord({
           id: this.deps.randomId(),
           ts: this.deps.now(),
           request,
-          session: concluded.session,
+          session,
           decision: concluded.decision,
           stage,
           apply,
           ...(trace ? { judge: trace } : {}),
           ...(usage ? { usage } : {}),
           ...(shadow ? { shadow } : {}),
+          ...(cascade ? { cascade } : {}),
         });
         this.deps.log(record);
         return record;

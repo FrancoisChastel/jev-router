@@ -85,12 +85,12 @@ function egressOf(policy: Policy, candidate: Candidate): EgressInput | undefined
 }
 
 /** Whether the candidate's egress accepts the request's wire format. Unknown formats and undeclared egresses pass. */
-function speaks(policy: Policy, candidate: Candidate, request: NormalizedRequest): boolean {
+export function speaks(policy: Policy, candidate: Candidate, request: NormalizedRequest): boolean {
   const dialects = request.dialect ? egressOf(policy, candidate)?.dialects : undefined;
   return !dialects || dialects.includes(request.dialect as WireDialect);
 }
 
-function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
+export function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
   const caps = candidate.capabilities;
   if (!caps) return true;
   if (request.hasImages && caps.vision === false) return false;
@@ -270,6 +270,7 @@ export function plan(input: PlanInput): PlanOutcome {
       counterfactuals: counterfactualCosts(policy.candidates, def.order, request.estimatedInputTokens, def.est_output_tokens),
       lease: o.lease,
       ...(cache ? { cache } : {}),
+      ...(capped ? { ceiling: capped.cap } : {}),
     };
     const assignment: CurrentAssignment =
       o.keepCurrent && current && !lowered

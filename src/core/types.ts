@@ -101,6 +101,8 @@ export interface Decision {
   readonly lease: Lease;
   /** Cache-aware switch estimate, present when the decision weighed a model switch against a known cached prefix. */
   readonly cache?: SwitchCostEstimate;
+  /** The highest tier an `at_most` cap allows this turn, present when a cap holds. A cascade never climbs above it. */
+  readonly ceiling?: string;
 }
 
 export interface SwitchCostEstimate {

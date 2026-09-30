@@ -87,6 +87,46 @@ Client-visible model ids. `auto` is the generic route, and any `<prefix>/auto` m
 | `switch.cache_penalty` | false | Weigh the prompt cache a model switch drops against what the switch saves; see [switch](#switch) |
 | `switch.prefer_effort_over_model` | false | Raise effort on the current model before escalating to the next one; see [switch](#switch) |
 | `tool_semantics` | built-in per harness | Extra tool names per class: `observe`, `mutate`, `plan`, `new`, `shell` |
+| `cascade` | off | Retry a failed-looking response one tier up within the same turn; see [Cascade](#cascade) |
+
+### Cascade
+
+A cascade re-runs a routed request on the next tier of `order` when the first answer looks like a failed attempt, before the client sees anything. The cheap tier serves most turns; the expensive one is paid only when the cheap one visibly fails.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Turn the cascade on for this policy |
+| `on` | `["upstream_error", "empty"]` | What counts as a failed attempt, checked in the order listed. `upstream_error`: HTTP 429, 5xx, 529 "overloaded", an unreachable upstream, or an error event in the stream. `empty`: no assistant text and no tool call (thinking alone is empty). `refusal`: a reply of at most 400 characters, with no tool call, containing "I can't", "I cannot", "I'm unable", "I won't", or "as an AI", or a refusal the provider flagged (OpenAI `refusal`, Anthropic `stop_reason: refusal`). `truncated`: stop reason `max_tokens`, `length`, or an incomplete Responses status |
+| `max_retries` | 1 | How many further tiers to try. The ladder is `order`, after the capability and egress-dialect filters and never above an `at_most` cap that held for the turn; effort is clamped to each tier as for any decision |
+| `buffer` | `true` | Hold the first attempt's response back until it is complete and assessed. With `false`, answers stream through unassessed and only `upstream_error` can trigger (an `on` list with anything else is rejected); `on` then defaults to `["upstream_error"]` |
+| `buffer_max_bytes` | 262144 | Stop buffering past this many bytes: the bytes so far are sent as received, the rest streams through, and the cascade is abandoned for that request (logged to stderr and in the record) |
+| `buffer_max_ms` | 20000 | Same, measured from the moment the response headers arrive |
+| `budget_usd` | none | Do not start a retry whose estimate (estimated input tokens times the next tier's `price.in`, plus `est_output_tokens` times its `price.out`) would take the request's spend so far above this |
+
+Only routed requests cascade: never passthrough ids, `count_tokens`, shadow mode, or a request already on the most capable eligible tier. The last permitted attempt streams straight through. If it also fails, the client gets that response; if it cannot be reached at all, the client gets the response held from the attempt before it. Nothing is merged: the client receives exactly one upstream response, with only the model id echoed as usual.
+
+```json
+"policies": {
+  "default": {
+    "default": "fast",
+    "order": ["fast", "mid", "frontier"],
+    "rules": [],
+    "cascade": {
+      "enabled": true,
+      "on": ["upstream_error", "empty", "refusal"],
+      "max_retries": 1,
+      "buffer": true,
+      "buffer_max_bytes": 262144,
+      "buffer_max_ms": 15000,
+      "budget_usd": 0.5
+    }
+  }
+}
+```
+
+**Latency.** Buffering means the client sees nothing until the first attempt has finished: a streamed answer arrives all at once instead of token by token, and pings are held back with it. For a short tool call from a fast tier that is a fraction of a second; for a long answer it is the whole generation time, and a retry adds the next tier's time on top. `buffer_max_ms` bounds the wait before the router gives up and streams, which keeps Claude Code and Codex from timing out on a silent connection, and `buffer_max_bytes` lets a long answer through as soon as it is clearly not empty. If time to first token matters more than catching empty or refusing answers, set `buffer: false` and keep the cascade for upstream errors only, which cost no latency because an error arrives before any byte is streamed.
+
+A cascaded request's log record keeps the router's original `decision` and adds `cascade: { attempts, served, abandoned? }`, one entry per upstream call with its outcome, usage, and list-price cost. The record's `usage` is the sum over attempts. The response carries `x-jev-router-cascade`, for example `fast->mid (empty)`, and `x-jev-router-candidate` names the tier that served. The session continues on the tier that served. `stats` charges every attempt in the actual cost, prices the single-candidate baselines on the served answer's tokens alone, and reports what the discarded attempts cost.
 
 ### Rules
 
