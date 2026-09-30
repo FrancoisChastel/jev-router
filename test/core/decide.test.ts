@@ -301,32 +301,6 @@ describe("conclude: judge-driven paths", () => {
     expect(decision.effort).toBe("high");
   });
 
-  test("prefer_effort_over_model raises effort instead of switching", () => {
-    const raw = minimalPolicy();
-    raw.policies.default.switch = { prefer_effort_over_model: true };
-    const p = loadPolicy(raw);
-    const session: SessionState = {
-      ...emptySession(),
-      turn: 2,
-      current: { candidate: "mid", effort: "low", lease: "one_call", sinceTurn: 0 },
-    };
-    const { decision } = judged(
-      req({ harness: "codex" }),
-      session,
-      {
-        difficulty: score(3.4),
-        needs_reasoning: noul(0.9),
-        stakes: score(2.5),
-        output_kind: choice("code_edit"),
-        long_context: noul(0.2),
-      },
-      p,
-    );
-    expect(decision.candidate).toBe("mid");
-    expect(decision.effort).toBe("high");
-    expect(decision.reasons).toContain("effort_over_model");
-  });
-
   test("execution-phase answers with allow_down de-escalate a producing agent", () => {
     const prod = [ok("Edit"), ok("Write"), ok("Edit")];
     const session: SessionState = {

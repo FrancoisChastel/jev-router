@@ -70,6 +70,7 @@ type Decision = {
   reasons: string[];            // human-readable, stable vocabulary
   counterfactuals: Record<string, { estCostUsd: number }>;
   lease: "one_call"|"tool_chain"|"user_turn";
+  cache?: { penaltyUsd: number; savingUsd: number };  // cache-aware switch estimate, when cache reads are known
 };
 ```
 
@@ -130,7 +131,7 @@ Harness hooks in Claude Code and Codex cannot change the model, reasoning effort
 5. Deterministic execution-phase score from the tool ledger (Switchyard stage router): recovery axes `severity`, `spinning`, `exploring` push toward capable; `production_intensity` pushes toward efficient. Signed score tanh-squashed to confidence in [0, 1]. Ambiguous band is `[-threshold, +threshold]`, default 0.5. `recent_turn_window` 3, `capable_hold_turns` 2.
 6. If new user turn, or score ambiguous, or no history: one judge call with the question set in section 6, on a bounded dossier.
 7. Policy rules map answers to a candidate and effort. Confidence gate: below `min_confidence`, keep current tier.
-8. Switch cost: switch only if expected gain beats price delta plus lost prompt cache plus lost thinking continuity. v1 uses thresholds and hold turns. v2 uses expected value with measured `cache_read_input_tokens`. Prefer switching at user-turn boundaries. For Codex, prefer adjusting effort over switching models.
+8. Switch cost. With `switch.prefer_effort_over_model`, an escalation from an `up` action or decisive signals first raises effort one level on the current model and switches only once effort is at the top; pins, `at_least`, and hard overrides switch directly. With `switch.cache_penalty`, a judged downgrade is weighed against the prompt cache it drops, using the cache reads the upstream reported for the session's previous response: the prefix re-sent at the new model's full price minus the discounted read staying would pay, against the per-turn saving over `recent_turn_window` turns. A downgrade that saves less than it loses is blocked; upgrades never are. Holds and leases still keep switches at user-turn boundaries. Lost thinking continuity is not yet priced.
 9. Execute through the relay or hand the decision to the in-process actuator. Fallback chain on 429 and 5xx.
 10. Log one JSONL line with raw answers, decision, source, usage, and counterfactual cost per candidate.
 
@@ -201,8 +202,8 @@ policies:
       - when: context_compacted                               then: { up: 1, hold_turns: 2 }
       - when: producing > 0.8 and tools_failed < 0.2          then: { allow_down: true }
     switch:
-      cache_penalty: true
-      prefer_effort_over_model: true    # Codex
+      cache_penalty: true               # weigh the prompt cache a downgrade drops
+      prefer_effort_over_model: true    # raise effort before escalating the model
 ```
 
 Rule expressions are a tiny, whitelisted grammar: identifiers, numeric comparisons, `in`, `and`, `or`, `not`. No code execution. Identifiers are checked at load time against the deterministic context keys and the judge question ids, so a typo fails the policy load instead of silently never matching. A missing identifier makes its sub-expression unknown, and unknown never fires a rule, even under `not`. Compaction is a built-in override, not a rule input. `confidence_threshold` must be at least tanh(0.5), about 0.462, so a single tool-signal axis can never decide alone. `judge.on_error: fail_closed` sends an unjudged turn to the most capable candidate; `fail_open` keeps the current tier.
@@ -318,6 +319,8 @@ Deviations from the plan worth knowing:
 | Same-session concurrency | Last writer wins in the in-memory store | Rare in practice (retries, duplicate sends); documented rather than serialized, since a stream can take minutes |
 | Plan-backed inference | The harness's own login is forwarded unchanged; `init` reads only the plan type; tiers come from the plan's models | A Claude Max or ChatGPT user already pays for the models; routing among them stretches the allowance without a second bill. The relay never holds a token, which also keeps it out of the harness's auth flow. Only the harness that owns the login uses it (Claude Code to Anthropic, Codex to OpenAI), never another harness or the judge. |
 | Install as one command | `setup` asks for the judge key once, stores it in a 600 file, detects logins and installed harnesses, configures them, and installs a launchd or systemd user service | Nothing to remember, no terminal to keep open, and every step is individually available (`init`, `up`, `service`) for people who want to see it. `--dry-run` shows every file first. |
+| Effort first, model second | `switch.prefer_effort_over_model`: an `up` action or decisive signal escalation raises effort one level on the current model; the model switches only once effort is at the top. Pins, `at_least`, and hard overrides switch directly. On in generated policies, off in the schema default | Raising effort costs output tokens only and keeps the prompt cache and the model the session has been reasoning with; a new model costs a higher price on every input token and a cold cache. Stakes rules and overrides express a judgment that the current model is the wrong one, so they keep switching. The schema default stays off so existing hand-written policies do not change behavior on upgrade. |
+| Cache-aware switching | `switch.cache_penalty`: a judged downgrade is blocked when the cache it drops (cached prefix at the new full price, minus the 10% read staying would pay) exceeds the per-turn saving over `recent_turn_window` turns; upgrades are never blocked; both numbers are logged as `decision.cache` | Caches are per model, so a switch after a long session re-sends a large prefix at full price, which can erase what a cheaper model saves over the next few turns. The estimate uses the cache reads the upstream actually reported, which the daemon supplies to the pure core through session state; without them nothing changes. Quality comes first, so the penalty never keeps a session on a weaker model. The horizon reuses `recent_turn_window` rather than adding a knob until measurement says otherwise. |
 | Default rule thresholds | Escalate on evidence: `difficulty >= 2.5 and needs_reasoning > 0.8`, `spinning > 0.7 or (tools_failed > 0.7 and spinning > 0.5)` | First Terminal-Bench run (12 easy/medium tasks, Pi): the 0.1.0 thresholds escalated a quarter of the tasks on first-turn guesses or a single failed call, gained nothing in success, and cost 180x more per solved task. Replay predicted and a live re-run confirmed the tuned rules match the fast tier. In-sample; hard tasks still to run. See docs/evaluation.md. |
 
 ## 14. Open questions and risks

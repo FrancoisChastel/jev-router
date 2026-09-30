@@ -1,7 +1,7 @@
 import { plan } from "../core/decide";
 import type { Policy } from "../core/policy/types";
 import type { DecisionRecord } from "../core/record";
-import { emptySession } from "../core/session";
+import { emptySession, withUsage } from "../core/session";
 import { type Decision, EFFORT_ORDER, type Effort, type NormalizedRequest, type SessionState } from "../core/types";
 import { costOf } from "./stats";
 
@@ -70,6 +70,8 @@ export function replay(records: readonly DecisionRecord[], policy: Policy, polic
         decision = c.decision;
         session = c.session;
       }
+      // Feed the recorded usage back so cache-aware switching sees what the live router saw.
+      session = withUsage(session, r.usage);
       if (decision.candidate !== r.decision.candidate) changed += 1;
       if (r.usage) {
         const served = policy.candidates[r.shadow?.served ?? r.decision.candidate];
