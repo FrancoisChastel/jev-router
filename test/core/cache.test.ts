@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CACHE_READ_DISCOUNT, cachePenaltyUsd, estimateSwitch, switchSavingUsd } from "../../src/core/cache";
+import { CACHE_READ_DISCOUNT, CACHED_INPUT_RATE, cachePenaltyUsd, estimateSwitch, switchSavingUsd } from "../../src/core/cache";
 import type { Candidate } from "../../src/core/policy/types";
 
 const cheap: Candidate = { model: "cheap", price: { in: 1, out: 4 } };
@@ -29,6 +29,18 @@ describe("switchSavingUsd", () => {
     expect(saving).toBeCloseTo(0.031 * 3, 10);
   });
 
+  test("prices the cached prefix at the cached rate on either model and only new tokens at full price", () => {
+    const base = { estOutputTokens: 600, from: pricey, to: cheap, horizonTurns: 1 };
+    // (($3 - $1) x (0.1 x 40k + 2k) + ($15 - $4) x 600) / 1M = (12,000 + 6,600) / 1M
+    expect(switchSavingUsd({ ...base, estimatedInputTokens: 42_000, cacheReadTokens: 40_000 })).toBeCloseTo(0.0186, 10);
+    // new tokens never go negative when the estimate undercounts the cached prefix
+    expect(switchSavingUsd({ ...base, estimatedInputTokens: 10_000, cacheReadTokens: 50_000 })).toBeCloseTo(
+      (2 * 5_000 + 11 * 600) / 1e6,
+      10,
+    );
+    expect(CACHED_INPUT_RATE).toBeCloseTo(0.1, 10);
+  });
+
   test("is negative for an upgrade", () => {
     const saving = switchSavingUsd({ estimatedInputTokens: 10_000, estOutputTokens: 1_000, from: cheap, to: pricey, horizonTurns: 1 });
     expect(saving).toBeLessThan(0);
@@ -46,6 +58,7 @@ describe("estimateSwitch", () => {
   test("returns both numbers when cache reads are known", () => {
     const est = estimateSwitch({ ...base, lastUsage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 50_000 } });
     expect(est?.penaltyUsd).toBeCloseTo(0.05 - 0.015, 10);
-    expect(est?.savingUsd).toBeCloseTo(switchSavingUsd(base), 10);
+    expect(est?.savingUsd).toBeCloseTo(switchSavingUsd({ ...base, cacheReadTokens: 50_000 }), 10);
+    expect(est?.savingUsd).toBeLessThan(switchSavingUsd(base));
   });
 });

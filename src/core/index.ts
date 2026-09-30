@@ -1,5 +1,5 @@
 export type { CachePenaltyInput, SwitchEstimateInput, SwitchSavingInput } from "./cache";
-export { CACHE_READ_DISCOUNT, cachePenaltyUsd, estimateSwitch, switchSavingUsd } from "./cache";
+export { CACHE_READ_DISCOUNT, CACHED_INPUT_RATE, cachePenaltyUsd, estimateSwitch, switchSavingUsd } from "./cache";
 export { DETERMINISTIC_KEYS, knownIdentifiers } from "./context-keys";
 export { counterfactualCosts, estimateCostUsd } from "./cost";
 export type { Concluded, PlanInput, PlanOutcome } from "./decide";

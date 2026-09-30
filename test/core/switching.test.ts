@@ -195,15 +195,17 @@ describe("effort first, model second", () => {
 });
 
 describe("cache-aware switching", () => {
-  /** mid close to frontier in input price, so a frontier -> mid downgrade saves little per turn. */
+  /** Opus-like frontier ($4 / $20) and Sonnet-like mid ($2 / $10), as in the docs' worked example. */
   const close = (window = 3, cache = true) =>
     withSwitch((raw) => {
-      raw.candidates.mid.price = { in: 8, out: 30 };
+      raw.candidates.frontier.price = { in: 4, out: 20 };
+      raw.candidates.mid.price = { in: 2, out: 10 };
       raw.policies.default.default = "mid";
       raw.policies.default.recent_turn_window = window;
       raw.policies.default.switch = { cache_penalty: cache };
     });
-  const bigPrefix: LastUsage = { inputTokens: 2_000, outputTokens: 400, cacheReadTokens: 100_000 };
+  const bigPrefix: LastUsage = { inputTokens: 2_000, outputTokens: 600, cacheReadTokens: 40_000 };
+  const longTurn = (over: Partial<NormalizedRequest> = {}) => req({ estimatedInputTokens: 42_000, ...over });
   const onFrontier = (lastUsage?: LastUsage): SessionState => ({
     ...emptySession(),
     turn: 3,
@@ -211,35 +213,45 @@ describe("cache-aware switching", () => {
     ...(lastUsage ? { lastUsage } : {}),
   });
 
-  test("a small downgrade with a big cached prefix is blocked and explained", () => {
-    const { decision, session } = judged(close(), req(), onFrontier(bigPrefix), easy);
+  test("a downgrade that saves less than the cache it drops is blocked and explained", () => {
+    const { decision, session } = judged(close(), longTurn(), onFrontier(bigPrefix), easy);
     expect(decision.candidate).toBe("frontier");
     expect(decision.effort).toBe("high");
     expect(decision.reasons).toContain("cache_penalty_blocked");
-    // penalty: 100k x ($8 - $10 x 0.1) / 1M = 0.70; saving: 3 x (8k x $2 + 600 x $10) / 1M = 0.066
-    expect(decision.cache?.penaltyUsd).toBeCloseTo(0.7, 10);
-    expect(decision.cache?.savingUsd).toBeCloseTo(0.066, 10);
+    // penalty: 40k x ($2 - $4 x 0.1) / 1M = 0.064
+    // saving: 3 x (($4 - $2) x (0.1 x 40k + 2k) + ($20 - $10) x 600) / 1M = 3 x 0.018 = 0.054
+    expect(decision.cache?.penaltyUsd).toBeCloseTo(0.064, 10);
+    expect(decision.cache?.savingUsd).toBeCloseTo(0.054, 10);
     expect(session.current?.candidate).toBe("frontier");
   });
 
-  test("a large saving over the horizon overrides the penalty", () => {
-    const { decision } = judged(close(20), req({ estimatedInputTokens: 30_000 }), onFrontier(bigPrefix), easy);
+  test("a longer horizon lets the saving override the penalty", () => {
+    const { decision } = judged(close(4), longTurn(), onFrontier(bigPrefix), easy);
     expect(decision.candidate).toBe("mid");
     expect(decision.reasons).not.toContain("cache_penalty_blocked");
-    expect(decision.cache).toBeDefined();
-    expect(decision.cache?.savingUsd ?? 0).toBeGreaterThan(decision.cache?.penaltyUsd ?? 0);
+    expect(decision.cache?.savingUsd).toBeCloseTo(0.072, 10);
+    expect(decision.cache?.penaltyUsd).toBeCloseTo(0.064, 10);
+  });
+
+  test("a smaller cached prefix does not block", () => {
+    const small: LastUsage = { ...bigPrefix, cacheReadTokens: 20_000 };
+    const { decision } = judged(close(), longTurn({ estimatedInputTokens: 22_000 }), onFrontier(small), easy);
+    expect(decision.candidate).toBe("mid");
+    // penalty 0.032; saving 3 x ((2 x (2k + 2k)) + 6k) / 1M = 0.042
+    expect(decision.cache?.penaltyUsd).toBeCloseTo(0.032, 10);
+    expect(decision.cache?.savingUsd).toBeCloseTo(0.042, 10);
   });
 
   test("without usage, or without cache reads, nothing changes", () => {
     for (const lastUsage of [undefined, { inputTokens: 2_000, outputTokens: 400 }]) {
-      const { decision } = judged(close(), req(), onFrontier(lastUsage), easy);
+      const { decision } = judged(close(), longTurn(), onFrontier(lastUsage), easy);
       expect(decision.candidate).toBe("mid");
       expect(decision.cache).toBeUndefined();
     }
   });
 
   test("with cache_penalty off the downgrade goes through", () => {
-    const { decision } = judged(close(3, false), req(), onFrontier(bigPrefix), easy);
+    const { decision } = judged(close(3, false), longTurn(), onFrontier(bigPrefix), easy);
     expect(decision.candidate).toBe("mid");
     expect(decision.cache).toBeUndefined();
   });
