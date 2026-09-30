@@ -1,4 +1,4 @@
-import type { CurrentAssignment, NormalizedRequest, SessionState } from "./types";
+import type { CurrentAssignment, LastUsage, NormalizedRequest, SessionState } from "./types";
 
 const LEDGER_MAX_BATCHES = 20;
 
@@ -34,6 +34,22 @@ export function advanceSession(session: SessionState, request: NormalizedRequest
         : {}),
   };
   return next;
+}
+
+/**
+ * Attach the usage the upstream reported for the call just served, so the next decision can weigh the cached prefix.
+ * Without usage the previous value is dropped: it described an older call. Pure; only token counts are kept.
+ */
+export function withUsage(session: SessionState, usage: LastUsage | undefined): SessionState {
+  const { lastUsage: _stale, ...rest } = session;
+  if (!usage) return rest;
+  const lastUsage: LastUsage = {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
+    ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
+  };
+  return { ...rest, lastUsage };
 }
 
 export interface SessionKey {

@@ -58,4 +58,23 @@ describe("router service pending signals", () => {
     d.commit({ ok: true });
     expect(store.peekPending("s").outcomes).toHaveLength(1);
   });
+
+  test("a completed response's usage is kept on the session for the next decision", async () => {
+    const store = new SessionStore();
+    const service = new RouterService({
+      policy: loadPolicy(minimalPolicy()),
+      judge: undefined,
+      store,
+      log: () => undefined,
+      now: () => 0,
+      randomId: () => "id",
+    });
+    const first = await service.decide({ harness: "unknown", sessionKey: "s", policyId: "default", body, estimatedInputTokens: 10 });
+    first.commit({ ok: true }, { inputTokens: 900, outputTokens: 50, cacheReadTokens: 800, costUsd: 0.01 });
+    expect(store.get("s")?.lastUsage).toEqual({ inputTokens: 900, outputTokens: 50, cacheReadTokens: 800 });
+
+    const second = await service.decide({ harness: "unknown", sessionKey: "s", policyId: "default", body, estimatedInputTokens: 10 });
+    second.commit({ ok: true });
+    expect(store.get("s")?.lastUsage).toBeUndefined();
+  });
 });
