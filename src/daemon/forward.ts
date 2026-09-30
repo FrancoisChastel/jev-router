@@ -2,7 +2,8 @@ import type { EgressInput, Policy } from "../core/policy/types";
 import type { TokenUsage } from "../core/record";
 import type { FetchLike } from "../judge/http";
 import type { JsonObject } from "./dialects/types";
-import { copyResponseHeaders, errorBody, mergeUsage, sendJson, upstreamHeaders } from "./http-util";
+import { copyResponseHeaders, errorBody, mergeUsage, sendJson, upstreamHeaders, usageLikeHeaders } from "./http-util";
+import type { PlanWindowStore } from "./plan-window";
 import type { RelayRequest } from "./relay";
 import { createSseTransform } from "./sse";
 
@@ -14,6 +15,36 @@ export interface Target {
 export interface UpstreamDeps {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly fetch: FetchLike;
+  /** Receives the usage-window headers of every response from a plan-billed egress. */
+  readonly planWindows?: PlanWindowStore;
+  readonly now?: () => number;
+}
+
+/** Record the plan window a subscription egress reported on this response. Never throws into the response path. */
+export function observePlan(
+  deps: UpstreamDeps,
+  name: string,
+  egress: EgressInput,
+  upstream: { readonly headers: Response["headers"] },
+): void {
+  if (!deps.planWindows || egress.billing !== "subscription") return;
+  try {
+    deps.planWindows.update(name, (h) => upstream.headers.get(h), (deps.now ?? Date.now)());
+  } catch (e) {
+    console.error(`jev-router: plan window not recorded: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** A key from the egress's environment variable, or nothing when the egress forwards the caller's or needs none. */
+export function credentialsFor(
+  deps: UpstreamDeps,
+  name: string,
+  egress: EgressInput,
+): { readonly apiKey?: string; readonly error?: string } {
+  const apiKey = egress.api_key_env ? deps.env[egress.api_key_env] : undefined;
+  if (apiKey) return { apiKey };
+  if (egress.forward_auth === true || egress.no_auth === true) return {};
+  return { error: `egress '${name}' has no API key in $${egress.api_key_env ?? "(unset)"}` };
 }
 
 export function defaultEgress(policy: Policy): Target | undefined {
@@ -40,14 +71,10 @@ export type UpstreamCall =
 
 /** POST `body` to the target egress with credentials swapped. Aborts when the client goes away. Never throws. */
 export async function callUpstream(deps: UpstreamDeps, r: RelayRequest, target: Target, body: JsonObject): Promise<UpstreamCall> {
-  const apiKey = target.egress.api_key_env ? deps.env[target.egress.api_key_env] : undefined;
+  const creds = credentialsFor(deps, target.name, target.egress);
+  if (creds.error) return { kind: "no_key", error: creds.error, clientError: `egress '${target.name}' has no API key configured` };
+  const apiKey = creds.apiKey;
   const forwardAuth = target.egress.forward_auth === true;
-  if (!forwardAuth && !apiKey)
-    return {
-      kind: "no_key",
-      error: `egress '${target.name}' has no API key in $${target.egress.api_key_env ?? "(unset)"}`,
-      clientError: `egress '${target.name}' has no API key configured`,
-    };
   const url = `${target.egress.base_url.replace(/\/+$/, "")}${r.path}${r.query}`;
   const headers = upstreamHeaders(r.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: r.dialect.dialect });
   const abort = new AbortController();
@@ -58,6 +85,9 @@ export async function callUpstream(deps: UpstreamDeps, r: RelayRequest, target: 
     const res = await deps.fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: abort.signal });
     if (process.env.JEV_ROUTER_DEBUG_SSE)
       console.error(`jev-router forward: ${res.status} content-type=${res.headers.get("content-type")} body=${res.body ? "yes" : "no"}`);
+    if (process.env.JEV_ROUTER_DEBUG_HEADERS)
+      for (const [k, v] of usageLikeHeaders(res.headers)) console.error(`jev-router headers: ${target.name} ${k}: ${v}`);
+    observePlan(deps, target.name, target.egress, res);
     return { kind: "reply", reply: { status: res.status, ok: res.ok, headers: res.headers, body: res.body } };
   } catch (e) {
     const error = `upstream unreachable: ${e instanceof Error ? e.message : String(e)}`;

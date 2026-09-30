@@ -31,6 +31,8 @@ import {
 import { claudeCodeBehavesAs, harnessAuth } from "./plans";
 import { installService, type ServiceDeps, type ServiceSpec, serviceState, uninstallService } from "./service";
 import { AGENTS, type Agent, runSetup } from "./setup";
+import { statusLine } from "./statusline";
+import { formatWhy } from "./why";
 
 const USAGE = `jev-router <command>
 
@@ -58,6 +60,12 @@ const USAGE = `jev-router <command>
                                         print the base URL, key, and model to paste into Cursor; refuses a relay that
                                         answers without the token (--token or JEV_ROUTER_TOKEN)
   hook <claude-code|codex>              forward a native hook payload from stdin to the relay (used by hook packs)
+  why [--session <key>] [--last N] [--log <path>]
+                                        explain the last decision(s): tier, model, effort, reasons, judge answers,
+                                        cost, counterfactuals, and the plan window it saw
+  statusline [--port 4141] [--url <loopback url>]
+                                        one line for Claude Code's statusLine: tier, saved today, plan 5h usage;
+                                        prints nothing when the relay is not running
   policy                                validate the policy file and print where it was read from
   version | --version
   help
@@ -202,7 +210,7 @@ export function parseUpOptions(args: readonly string[], env: Readonly<Record<str
 async function ensurePolicy(log: (line: string) => void): Promise<string> {
   const policyPath = await resolvePolicyPath();
   const r = await initPolicy({ path: policyPath, log });
-  if (r.written) for (const line of describeDetection(r.detection, r.subscriptions)) log(`  ${line}`);
+  if (r.written) for (const line of describeDetection(r.detection, r.subscriptions, r.ollama)) log(`  ${line}`);
   return policyPath;
 }
 
@@ -217,7 +225,7 @@ async function init(args: readonly string[]): Promise<void> {
     ...(args.includes("--no-subscriptions") ? { subscriptions: false } : {}),
     log: (l) => console.log(l),
   });
-  for (const line of describeDetection(r.detection, r.subscriptions)) console.log(`  ${line}`);
+  for (const line of describeDetection(r.detection, r.subscriptions, r.ollama)) console.log(`  ${line}`);
   console.log(`  prices  ${r.pricesFrom}`);
   console.log(
     `  models  ${Object.entries(r.policy.candidates)
@@ -513,6 +521,43 @@ async function replayCmd(args: readonly string[]): Promise<void> {
   for (const [k, v] of Object.entries(moves)) console.log(`  ${k}: ${v}`);
 }
 
+async function why(args: readonly string[]): Promise<void> {
+  const { records, skipped } = await loadLog(args);
+  const last = Number(flag(args, "--last") ?? 1);
+  if (!Number.isInteger(last) || last < 1) throw new Error(`invalid --last ${flag(args, "--last")}`);
+  let policy: Awaited<ReturnType<typeof readPolicyFile>> | undefined;
+  try {
+    policy = await readPolicyFile(flag(args, "--policy") ?? (await resolvePolicyPath()));
+  } catch {
+    /* no policy: costs are shown as token counts and estimates only */
+  }
+  const session = flag(args, "--session");
+  console.log(formatWhy(records, { last, ...(session ? { session } : {}) }, policy));
+  if (skipped > 0) console.log(`(${skipped} malformed log lines skipped)`);
+}
+
+const STDIN_WAIT_MS = 200;
+
+/** Whatever arrives on stdin within a short wait; a TTY or a silent pipe yields "". */
+async function readStdinBriefly(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  const chunks: Buffer[] = [];
+  const read = (async () => {
+    for await (const c of process.stdin) chunks.push(c as Buffer);
+  })();
+  await Promise.race([read, new Promise((r) => setTimeout(r, STDIN_WAIT_MS).unref())]);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function statusline(args: readonly string[]): Promise<void> {
+  const port = flag(args, "--port") ?? process.env.JEV_ROUTER_PORT ?? "4141";
+  const url = flag(args, "--url") ?? `http://127.0.0.1:${port}`;
+  const token = process.env.JEV_ROUTER_TOKEN;
+  const line = await statusLine({ url, stdin: await readStdinBriefly(), ...(token ? { token } : {}) });
+  if (line) console.log(line);
+  process.stdin.destroy();
+}
+
 async function version(): Promise<void> {
   const pkg = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as { name: string; version: string };
   console.log(`${pkg.name} ${pkg.version}`);
@@ -532,6 +577,8 @@ export async function main(argv: readonly string[]): Promise<void> {
   if (command === "stats") return stats(rest);
   if (command === "replay") return replayCmd(rest);
   if (command === "policy") return policy();
+  if (command === "why") return why(rest);
+  if (command === "statusline") return statusline(rest);
   console.log(USAGE);
   if (command && command !== "help") process.exitCode = 1;
 }

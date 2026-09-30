@@ -1,6 +1,6 @@
 import type { Answer } from "../judge/types";
 import type { StageScore } from "./signals/stage";
-import type { Decision, Effort, Harness, NormalizedRequest, RequestClass, SessionState } from "./types";
+import type { Decision, Effort, Harness, NormalizedRequest, PlanUtilization, RequestClass, SessionState } from "./types";
 
 export interface JudgeTrace {
   readonly questions: readonly string[];
@@ -39,6 +39,8 @@ export interface DecisionRecord {
   readonly shadow?: { readonly served: string };
   /** Present when a cascade retried the request or gave up on retrying it. `usage` above is then the sum over attempts. */
   readonly cascade?: CascadeRecord;
+  /** Plan window utilization the decision saw on a subscription egress, when one had been observed. */
+  readonly plan?: PlanUtilization;
 }
 
 /** One upstream call made for a cascaded request. `outcome` is `served`, a cascade trigger, or `unreachable`. */
@@ -115,5 +117,6 @@ export function buildDecisionRecord(input: RecordInput): DecisionRecord {
     ...(input.usage ? { usage: input.usage } : {}),
     ...(input.shadow ? { shadow: input.shadow } : {}),
     ...(input.cascade ? { cascade: input.cascade } : {}),
+    ...(request.planWindow ? { plan: request.planWindow } : {}),
   };
 }

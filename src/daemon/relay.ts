@@ -9,8 +9,18 @@ import { runCascade } from "./cascade/run";
 import { cursorUpstreamPath, isResponsesShaped } from "./cursor";
 import { DIALECTS } from "./dialects";
 import { type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
-import { defaultEgress, egressFor, forward, type Target } from "./forward";
-import { copyResponseHeaders, detectHarness, errorBody, type Headers, requestClassOf, sendJson, upstreamHeaders } from "./http-util";
+import { credentialsFor, defaultEgress, egressFor, forward, observePlan, type Target } from "./forward";
+import {
+  copyResponseHeaders,
+  detectHarness,
+  errorBody,
+  type Headers,
+  requestClassOf,
+  sendJson,
+  upstreamHeaders,
+  usageLikeHeaders,
+} from "./http-util";
+import type { PlanWindowStore } from "./plan-window";
 import type { Decided, RouterService } from "./service";
 
 export interface RelayDeps {
@@ -20,6 +30,9 @@ export interface RelayDeps {
   readonly fetch: FetchLike;
   /** Shadow mode: always serve this candidate while logging what the router would have done. */
   readonly shadow?: string;
+  /** Receives the usage-window headers of every response from a plan-billed egress. */
+  readonly planWindows?: PlanWindowStore;
+  readonly now?: () => number;
 }
 
 const CHARS_PER_TOKEN = 4;
@@ -127,6 +140,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     ...(requestClass ? { requestClass } : {}),
     ...(r.headers["x-claude-code-context-compacted"] ? { contextCompacted: true } : {}),
     estimatedInputTokens: Math.ceil(r.rawBody.length / CHARS_PER_TOKEN),
+    // The body's own shape, which is what the upstream must read (Cursor sends Responses bodies on the chat path).
+    dialect: shape.dialect,
   });
   const cascade = policy.policies[route.policy]?.cascade;
   if (cascade?.enabled && !deps.shadow && nextTier(policy, route.policy, decided.request, decided.decision)) {
@@ -156,13 +171,13 @@ function routingHeaders(served: Decision, decision: Decision): Record<string, st
   };
 }
 
-/** Forward a routed request once, on the decided candidate or, in shadow mode, on the shadow candidate. */
 /** How a routed body is read and rewritten, and how the request is addressed to each egress. */
 interface Addressing {
   readonly shape: DialectAdapter;
   readonly toTarget: (target: Target) => RelayRequest;
 }
 
+/** Forward a routed request once, on the decided candidate or, in shadow mode, on the shadow candidate. */
 async function serveDecision(
   deps: RelayDeps,
   r: RelayRequest,
@@ -212,12 +227,13 @@ export async function proxy(
   target: { readonly name: string; readonly egress: EgressInput },
   p: ProxyRequest,
 ): Promise<void> {
-  const apiKey = target.egress.api_key_env ? deps.env[target.egress.api_key_env] : undefined;
-  const forwardAuth = target.egress.forward_auth === true;
-  if (!forwardAuth && !apiKey) {
+  const creds = credentialsFor(deps, target.name, target.egress);
+  if (creds.error) {
     sendJson(p.res, 502, errorBody(undefined, 502, `egress '${target.name}' has no API key configured`));
     return;
   }
+  const apiKey = creds.apiKey;
+  const forwardAuth = target.egress.forward_auth === true;
   const url = `${target.egress.base_url.replace(/\/+$/, "")}${p.path}${p.query}`;
   // "anthropic" makes upstreamHeaders inject both bearer and x-api-key when a key is used; harmless elsewhere.
   const headers = upstreamHeaders(p.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: "anthropic" });
@@ -240,6 +256,9 @@ export async function proxy(
       sendJson(p.res, 502, errorBody(undefined, 502, `upstream unreachable: ${e instanceof Error ? e.message : String(e)}`));
     return;
   }
+  if (process.env.JEV_ROUTER_DEBUG_HEADERS)
+    for (const [k, v] of usageLikeHeaders(upstream.headers)) console.error(`jev-router headers: ${target.name} ${k}: ${v}`);
+  observePlan(deps, target.name, target.egress, upstream);
   p.res.statusCode = upstream.status;
   copyResponseHeaders(upstream, p.res);
   p.res.setHeader("x-jev-router-source", "proxy");

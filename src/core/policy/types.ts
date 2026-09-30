@@ -1,4 +1,4 @@
-import type { Effort, Harness, ToolClass } from "../types";
+import type { Effort, Harness, ToolClass, WireDialect } from "../types";
 import type { CompiledExpr } from "./expr";
 
 export type JudgeTransport = "typesafe" | "vercel" | "openrouter" | "mock";
@@ -28,6 +28,10 @@ export interface EgressInput {
   readonly mount?: string;
   /** `subscription` marks an upstream billed by a plan; candidate prices are then API-equivalent weights, not dollars. */
   readonly billing?: "usd" | "subscription";
+  /** Send no credentials at all, for a local server such as Ollama. */
+  readonly no_auth?: boolean;
+  /** Wire formats the upstream accepts. Candidates behind this egress are skipped for other formats. Default: all. */
+  readonly dialects?: readonly WireDialect[];
 }
 
 export interface CandidateCapabilities {
@@ -54,6 +58,8 @@ export interface CandidateInput {
 export interface RuleAction {
   readonly pin?: string;
   readonly at_least?: string;
+  /** A cap: never serve above this tier this turn, whatever else decided. Applied after every other action. */
+  readonly at_most?: string;
   readonly up?: number;
   readonly allow_down?: boolean;
   readonly effort?: Effort;

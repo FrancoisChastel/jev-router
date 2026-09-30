@@ -68,6 +68,19 @@ describe("claude code settings plan", () => {
     const twice = planClaudeCodeSettings(once, target);
     expect(twice).toEqual(once);
   });
+
+  test("adds the jev-router statusLine only when settings have none", () => {
+    const fresh = planClaudeCodeSettings({}, target) as { statusLine: unknown };
+    expect(fresh.statusLine).toEqual({
+      type: "command",
+      command: "/usr/local/bin/jev-router statusline --url http://127.0.0.1:4141",
+    });
+    const subscription = planClaudeCodeSettings({}, { ...target, auth: { claudeCode: "subscription" } }) as { statusLine: unknown };
+    expect(subscription.statusLine).toEqual(fresh.statusLine);
+    const own = { type: "command", command: "~/.claude/my-statusline.sh", padding: 1 };
+    const kept = planClaudeCodeSettings({ statusLine: own }, target) as { statusLine: unknown };
+    expect(kept.statusLine).toEqual(own);
+  });
 });
 
 describe("codex plans", () => {

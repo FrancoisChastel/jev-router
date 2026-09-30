@@ -44,6 +44,20 @@ describe("nextTier", () => {
     expect(nextTier(p, "default", request(), decision("fast"))?.candidate).toBe("mid");
   });
 
+  test("never climbs above an at_most ceiling, and skips tiers whose egress cannot speak the body's dialect", () => {
+    expect(nextTier(policy, "default", request(), decision("fast", { ceiling: "fast" }))).toBeUndefined();
+    expect(nextTier(policy, "default", request(), decision("fast", { ceiling: "mid" }))?.candidate).toBe("mid");
+    expect(nextTier(policy, "default", request(), decision("mid", { ceiling: "mid" }))).toBeUndefined();
+
+    const raw = minimalPolicy();
+    raw.egress = { chat: { base_url: "https://a", dialects: ["openai-chat"] }, any: { base_url: "https://b" } };
+    raw.candidates.fast.via = "any";
+    raw.candidates.mid.via = "chat";
+    raw.candidates.frontier.via = "any";
+    const p = loadPolicy(raw);
+    expect(nextTier(p, "default", request({ dialect: "anthropic" }), decision("fast"))?.candidate).toBe("frontier");
+  });
+
   test("clamps the effort to the new candidate's list", () => {
     const up = nextTier(policy, "default", request({ requestedEffort: "max" }), decision("fast"));
     expect(up?.effort).toBe("high");

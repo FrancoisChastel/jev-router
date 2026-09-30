@@ -52,6 +52,18 @@ When Claude Code is logged in with a claude.ai account, `init` adds an `anthropi
 
 The relay never sees a token at rest and the log records tokens and API-equivalent cost, never credentials. This needs the relay on loopback: a `--token` bind would reject Claude Code's own bearer.
 
+Anthropic reports how full the plan's five-hour and seven-day windows are on every response. The relay keeps the latest values, and the generated policy caps the tier at Sonnet from 80% of the five-hour window and at Haiku from 95%, so a long session slows down instead of hitting the limit (see [policy.md](./policy.md#plan-windows)). The same applies to Codex on a ChatGPT login.
+
+### Status line and `why`
+
+`setup` adds a `statusLine` to `~/.claude/settings.json` when it has none (your own is never replaced):
+
+```json
+{ "statusLine": { "type": "command", "command": "/path/to/node /path/to/jev-router statusline --url http://127.0.0.1:4141" } }
+```
+
+It reads the session id Claude Code pipes on stdin, asks the relay's `GET /status` with a 300 ms timeout, and prints one line such as `jev-router · sonnet-5 · saved $0.42 today · plan 5h 43%`; when the relay is not running it prints nothing. Savings are against the policy's priciest tier for the tokens actually used, at API list prices. `jev-router why` explains the last decision from the log (`--last N`, `--session <id>`): tier, model, effort, source, reasons, judge answers, cost, counterfactuals, and the plan window it saw.
+
 ## Codex
 
 Codex speaks the Responses API only. The relay serves it and forwards to a gateway that does too.
@@ -82,7 +94,7 @@ wire_api = "responses"
 requires_openai_auth = true
 ```
 
-`requires_openai_auth` makes Codex attach its ChatGPT login to requests to this provider, exactly as it does for `chatgpt.com/backend-api/codex`; the relay forwards them there with the model rewritten. No `JEV_ROUTER_TOKEN` is involved.
+`requires_openai_auth` makes Codex attach its ChatGPT login to requests to this provider, exactly as it does for `chatgpt.com/backend-api/codex`; the relay forwards them there with the model rewritten. No `JEV_ROUTER_TOKEN` is involved. The backend's `x-codex-primary-used-percent` (five-hour) and `x-codex-secondary-used-percent` (weekly) headers feed the same plan-window caps as Claude Code's.
 
 ## OpenCode
 
@@ -158,6 +170,10 @@ The second relay is there because the background service runs without a token. P
 ## Anything OpenAI-compatible
 
 Point the tool at `http://127.0.0.1:4141/v1` with model `auto`. Without harness hooks the router still has the tool results carried in the request body and the judge; it lacks only compaction notices and explicit error flags.
+
+## A free local tier with Ollama
+
+With Ollama running on `127.0.0.1:11434`, `init` adds an `ollama` egress and a zero-cost `local` candidate (a coding model you have pulled, such as `qwen3-coder`) to the default policy. Auxiliary and compaction calls in OpenAI chat format (OpenCode, anything OpenAI-compatible) go to it. Ollama speaks chat completions only, so Claude Code and Codex never land on it. Run `jev-router init --force` after starting Ollama to pick it up, and see [policy.md](./policy.md#a-free-local-tier) to make it the default tier.
 
 ## Background service
 

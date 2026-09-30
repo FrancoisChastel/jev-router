@@ -5,7 +5,7 @@ import { buildDossier, type DossierOptions } from "./dossier";
 import { effortStepUp, higherEffort, resolveEffort } from "./effort";
 import { getPolicyDef } from "./policy";
 import type { ExprContext, ExprValue } from "./policy/expr";
-import type { Candidate, Policy, PolicyDef } from "./policy/types";
+import type { Candidate, EgressInput, Policy, PolicyDef, RuleAction } from "./policy/types";
 import { executionPhaseQuestions, taskPhaseQuestions } from "./questions";
 import { advanceSession } from "./session";
 import { type StageScore, scoreStage } from "./signals/stage";
@@ -18,6 +18,7 @@ import type {
   NormalizedRequest,
   SessionState,
   SwitchCostEstimate,
+  WireDialect,
 } from "./types";
 
 /** A lease never outlives this many turns even without an error or a new user turn. */
@@ -50,6 +51,8 @@ interface Tiers {
   higher(a: string, b: string): string;
   /** Nearest eligible tier at or above `id` in the full order, else the highest eligible. */
   clamp(id: string): string;
+  /** Nearest eligible tier at or below `id` in the full order, else the lowest eligible. Used for caps. */
+  floor(id: string): string;
 }
 
 function makeTiers(fullOrder: readonly string[], eligible: readonly string[]): Tiers {
@@ -66,7 +69,25 @@ function makeTiers(fullOrder: readonly string[], eligible: readonly string[]): T
       const full = fullOrder.indexOf(id);
       return eligible.find((e) => fullOrder.indexOf(e) >= full) ?? (eligible[eligible.length - 1] as string);
     },
+    floor: (id) => {
+      if (eligible.includes(id)) return id;
+      const full = fullOrder.indexOf(id);
+      return [...eligible].reverse().find((e) => fullOrder.indexOf(e) <= full) ?? (eligible[0] as string);
+    },
   };
+}
+
+/** The egress a candidate is served through: its `via`, else the first egress, as the relay resolves it. */
+function egressOf(policy: Policy, candidate: Candidate): EgressInput | undefined {
+  if (candidate.via && policy.egress[candidate.via]) return policy.egress[candidate.via];
+  const first = Object.keys(policy.egress)[0];
+  return first ? policy.egress[first] : undefined;
+}
+
+/** Whether the candidate's egress accepts the request's wire format. Unknown formats and undeclared egresses pass. */
+export function speaks(policy: Policy, candidate: Candidate, request: NormalizedRequest): boolean {
+  const dialects = request.dialect ? egressOf(policy, candidate)?.dialects : undefined;
+  return !dialects || dialects.includes(request.dialect as WireDialect);
 }
 
 export function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
@@ -77,6 +98,8 @@ export function isCapable(candidate: Candidate, request: NormalizedRequest): boo
   if (caps.context !== undefined && request.estimatedInputTokens > caps.context) return false;
   return true;
 }
+
+const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
 function baseContext(request: NormalizedRequest, stage: StageScore, failuresNow: number): ExprContext {
   const dims = stage.abstained ? undefined : stage.dimensions;
@@ -94,10 +117,11 @@ function baseContext(request: NormalizedRequest, stage: StageScore, failuresNow:
   };
   if (request.requestClass) ctx.request_class = request.requestClass;
   if (request.requestedEffort) ctx.requested_effort = request.requestedEffort;
+  // Plan windows stay absent until observed, so rules reading them are unknown and never fire.
+  if (finite(request.planWindow?.fiveHour)) ctx.plan_5h = request.planWindow.fiveHour;
+  if (finite(request.planWindow?.sevenDay)) ctx.plan_7d = request.planWindow.sevenDay;
   return ctx;
 }
-
-const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
 /** Only well-formed values reach rules; anything else stays unknown so rules fail closed. */
 function flattenAnswers(answers: Readonly<Record<string, Answer>>): ExprContext {
@@ -138,9 +162,32 @@ interface FinishOptions {
   readonly hold?: number;
   readonly confidence?: number;
   readonly keepCurrent?: boolean;
+  /** Context the `at_most` caps are evaluated against; the deterministic context unless the judge answered. */
+  readonly capContext?: ExprContext;
   /** Estimate that blocked a switch; otherwise finish computes one for any model switch. */
   readonly cache?: SwitchCostEstimate;
 }
+
+interface Cap {
+  readonly cap: string;
+  readonly reasons: readonly string[];
+}
+
+/** The lowest `at_most` cap among the rules that hold in `ctx`. Unknown identifiers never hold, so no cap. */
+function capFor(def: PolicyDef, tiers: Tiers, ctx: ExprContext): Cap | undefined {
+  let cap: string | undefined;
+  const reasons: string[] = [];
+  for (const [i, rule] of def.rules.entries()) {
+    if (!rule.then.at_most || !rule.expr.evaluate(ctx)) continue;
+    const c = tiers.floor(rule.then.at_most);
+    reasons.push(`rule:${i}`);
+    if (cap === undefined || tiers.idx(c) < tiers.idx(cap)) cap = c;
+  }
+  return cap === undefined ? undefined : { cap, reasons };
+}
+
+/** Pure cap rules only bound the outcome; they are reported by the cap, not by the rule loop. */
+const isPureCap = (a: RuleAction): boolean => a.at_most !== undefined && Object.keys(a).length === 1;
 
 /**
  * Plan the routing of one request. Returns a decision immediately when deterministic evidence suffices,
@@ -151,10 +198,13 @@ export function plan(input: PlanInput): PlanOutcome {
   const def: PolicyDef = getPolicyDef(policy, policyId);
   const baseReasons: string[] = [];
 
-  const eligible = def.order.filter((id) => isCapable(policy.candidates[id] as Candidate, request));
-  if (eligible.length < def.order.length) baseReasons.push("capability_filter");
+  const speaking = def.order.filter((id) => speaks(policy, policy.candidates[id] as Candidate, request));
+  if (speaking.length < def.order.length) baseReasons.push("dialect_filter");
+  const eligible = speaking.filter((id) => isCapable(policy.candidates[id] as Candidate, request));
+  if (eligible.length < speaking.length) baseReasons.push("capability_filter");
   if (eligible.length === 0) baseReasons.push("no_eligible_candidate");
-  const tiers = makeTiers(def.order, eligible.length > 0 ? eligible : [def.order[def.order.length - 1] as string]);
+  const lastResort = speaking[speaking.length - 1] ?? (def.order[def.order.length - 1] as string);
+  const tiers = makeTiers(def.order, eligible.length > 0 ? eligible : [lastResort]);
 
   const current: CurrentAssignment | undefined =
     session.current && tiers.ids.includes(session.current.candidate) ? session.current : undefined;
@@ -200,7 +250,12 @@ export function plan(input: PlanInput): PlanOutcome {
     return estimate && estimate.savingUsd < estimate.penaltyUsd ? estimate : undefined;
   };
 
-  const finish = (candidateId: string, source: DecisionSource, o: FinishOptions): Concluded => {
+  const finish = (wantedId: string, source: DecisionSource, o: FinishOptions): Concluded => {
+    // Caps come last and bound every path, overrides and holds included: never above the cap this turn.
+    const capped = capFor(def, tiers, o.capContext ?? ctx);
+    const lowered = capped !== undefined && tiers.idx(wantedId) > tiers.idx(capped.cap);
+    const candidateId = lowered ? capped.cap : wantedId;
+    const capReasons = lowered ? [...capped.reasons.filter((r) => !o.reasons.includes(r)), "capped"] : [];
     const candidate = policy.candidates[candidateId] as Candidate;
     const { effort, clamped } = resolveEffort(candidate, o.effortWanted);
     const cache = o.cache ?? switchEstimate(candidateId);
@@ -211,13 +266,14 @@ export function plan(input: PlanInput): PlanOutcome {
       ...(effort ? { effort } : {}),
       source,
       ...(o.confidence !== undefined ? { confidence: o.confidence } : {}),
-      reasons: [...baseReasons, ...o.reasons, ...(clamped ? ["effort_clamped"] : [])],
+      reasons: [...baseReasons, ...o.reasons, ...capReasons, ...(clamped ? ["effort_clamped"] : [])],
       counterfactuals: counterfactualCosts(policy.candidates, def.order, request.estimatedInputTokens, def.est_output_tokens),
       lease: o.lease,
       ...(cache ? { cache } : {}),
+      ...(capped ? { ceiling: capped.cap } : {}),
     };
     const assignment: CurrentAssignment =
-      o.keepCurrent && current
+      o.keepCurrent && current && !lowered
         ? current
         : { candidate: candidateId, ...(effort ? { effort } : {}), lease: o.lease, sinceTurn: session.turn };
     return {
@@ -328,7 +384,7 @@ export function plan(input: PlanInput): PlanOutcome {
     const full: ExprContext = { ...ctx, ...flattenAnswers(answers) };
     const confidence = minConfidence(answers, def);
     if (confidence < def.min_confidence) {
-      return finish(baseline, "judge", { reasons: ["low_confidence"], lease: "tool_chain", confidence, ...fallbackOpt });
+      return finish(baseline, "judge", { reasons: ["low_confidence"], lease: "tool_chain", confidence, capContext: full, ...fallbackOpt });
     }
 
     let target = tiers.clamp(def.default);
@@ -339,9 +395,9 @@ export function plan(input: PlanInput): PlanOutcome {
     let pinned = false;
     const reasons: string[] = [];
     for (const [i, rule] of def.rules.entries()) {
-      if (!rule.expr.evaluate(full)) continue;
-      reasons.push(`rule:${i}`);
       const a = rule.then;
+      if (isPureCap(a) || !rule.expr.evaluate(full)) continue;
+      reasons.push(`rule:${i}`);
       if (a.effort) effortWanted = a.effort;
       if (a.hold_turns !== undefined) holdTurns = a.hold_turns;
       if (a.pin) {
@@ -379,6 +435,7 @@ export function plan(input: PlanInput): PlanOutcome {
     const finalEffort = effortWanted ?? request.requestedEffort;
     return finish(target, "judge", {
       reasons,
+      capContext: full,
       lease: "tool_chain",
       confidence,
       ...(finalEffort ? { effortWanted: finalEffort } : {}),

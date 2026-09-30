@@ -1,4 +1,4 @@
-import { isCapable } from "./decide";
+import { isCapable, speaks } from "./decide";
 import { resolveEffort } from "./effort";
 import { getPolicyDef } from "./policy";
 import type { Candidate, Policy } from "./policy/types";
@@ -11,13 +11,19 @@ import type { Decision, Effort, NormalizedRequest, SessionState } from "./types"
  */
 export function nextTier(policy: Policy, policyId: string, request: NormalizedRequest, from: Decision): Decision | undefined {
   const order = getPolicyDef(policy, policyId).order;
-  const eligible = order.filter((id) => isCapable(policy.candidates[id] as Candidate, request));
+  const eligible = order.filter((id) => {
+    const c = policy.candidates[id] as Candidate;
+    return speaks(policy, c, request) && isCapable(c, request);
+  });
   const fromRank = order.indexOf(from.candidate);
-  const nextId = eligible.find((id) => order.indexOf(id) > fromRank);
+  // An `at_most` cap that held for this turn bounds the cascade as it bounds every other path.
+  const ceilingRank = from.ceiling !== undefined && order.includes(from.ceiling) ? order.indexOf(from.ceiling) : order.length;
+  const nextId = eligible.find((id) => order.indexOf(id) > fromRank && order.indexOf(id) <= ceilingRank);
   if (nextId === undefined) return undefined;
   const candidate = policy.candidates[nextId] as Candidate;
   const { effort, clamped } = resolveEffort(candidate, from.effort ?? request.requestedEffort);
-  const { via: _via, effort: _effort, ...rest } = from;
+  // The switch estimate belonged to the original choice; a retry is not a switch the cache rule weighed.
+  const { via: _via, effort: _effort, cache: _cache, ...rest } = from;
   return {
     ...rest,
     candidate: nextId,

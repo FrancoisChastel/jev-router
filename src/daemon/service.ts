@@ -11,9 +11,19 @@ import {
 } from "../core/record";
 import { emptySession, withUsage } from "../core/session";
 import { type StageScore, scoreStage } from "../core/signals/stage";
-import type { Decision, Harness, NormalizedRequest, RequestClass, SessionState, ToolOutcome } from "../core/types";
+import type {
+  Decision,
+  Harness,
+  NormalizedRequest,
+  PlanUtilization,
+  RequestClass,
+  SessionState,
+  ToolOutcome,
+  WireDialect,
+} from "../core/types";
 import type { Judge } from "../judge/types";
 import type { NormalizedBody } from "./dialects/types";
+import type { PlanWindowStore } from "./plan-window";
 import type { SessionStore } from "./session-store";
 
 export interface DecideInput {
@@ -24,6 +34,8 @@ export interface DecideInput {
   readonly requestClass?: RequestClass;
   readonly contextCompacted?: boolean;
   readonly estimatedInputTokens: number;
+  /** Wire format of the request, so candidates whose egress cannot speak it are skipped. */
+  readonly dialect?: WireDialect;
 }
 
 export interface Decided {
@@ -45,6 +57,20 @@ export interface RouterServiceDeps {
   readonly log: (record: DecisionRecord) => void;
   readonly now: () => number;
   readonly randomId: () => string;
+  /** Plan windows observed on subscription egresses; absent means rules never see `plan_5h` / `plan_7d`. */
+  readonly planWindows?: PlanWindowStore;
+}
+
+/**
+ * The subscription egress a session on this policy bills: its current candidate's, else the policy default's.
+ * Undefined when that egress is not plan-billed. Pure.
+ */
+export function planEgressFor(policy: Policy, policyId: string, current: string | undefined): string | undefined {
+  const def = policy.policies[policyId];
+  if (!def) return undefined;
+  const id = current && def.order.includes(current) ? current : def.default;
+  const name = policy.candidates[id]?.via ?? Object.keys(policy.egress)[0];
+  return name && policy.egress[name]?.billing === "subscription" ? name : undefined;
 }
 
 function afterCascade(session: SessionState, cascade: CascadeRecord): SessionState {
@@ -72,6 +98,10 @@ export class RouterService {
     const pending = store.peekPending(input.sessionKey);
     const toolOutcomes: readonly ToolOutcome[] = pending.outcomes.length > 0 ? pending.outcomes : input.body.toolOutcomes;
     const b = input.body;
+    const planEgress = planEgressFor(policy, input.policyId, session.current?.candidate);
+    const planWindow: PlanUtilization | undefined = planEgress
+      ? this.deps.planWindows?.utilization(planEgress, this.deps.now())
+      : undefined;
     const request: NormalizedRequest = {
       harness: input.harness,
       sessionKey: input.sessionKey,
@@ -86,6 +116,8 @@ export class RouterService {
       ...(b.requestedEffort ? { requestedEffort: b.requestedEffort } : {}),
       ...(input.contextCompacted || pending.compaction ? { contextCompacted: true } : {}),
       toolOutcomes,
+      ...(input.dialect ? { dialect: input.dialect } : {}),
+      ...(planWindow ? { planWindow } : {}),
     };
 
     const outcome = plan({ request, session, policy, policyId: input.policyId });
