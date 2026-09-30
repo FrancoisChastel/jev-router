@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Plan-window awareness. The relay reads how full a plan's usage windows are from the response headers of subscription egresses (Anthropic `anthropic-ratelimit-unified-5h-utilization` / `-7d-utilization`; Codex `x-codex-primary-used-percent` / `x-codex-secondary-used-percent`, verified live) and exposes them to rules as `plan_5h` and `plan_7d` (0..1, absent until observed). New rule action `at_most` caps the tier after every other action. Policies generated for a Claude Code or Codex login cap at the middle tier from 80% of the five-hour window and at the cheapest from 95%. `JEV_ROUTER_DEBUG_HEADERS=1` prints rate-limit and usage-like response headers.
+- `GET /status` on the relay: latest plan window per egress, the last decision per session with its cost and saving, and today's totals.
+- `jev-router why [--session <key>] [--last N] [--log <path>]` explains logged decisions: tier, model, effort, source, reasons, judge answers, cost, counterfactuals, plan window.
+- `jev-router statusline` for Claude Code's `statusLine`, for example `jev-router · sonnet-5 · saved $0.42 today · plan 5h 43%`; silent when the relay is down. `setup` adds it when `settings.json` has no status line.
+- A free local tier: `init` detects Ollama on `127.0.0.1:11434`, adds an `ollama` egress and a `local` candidate (a pulled coding model), and pins auxiliary and compaction calls to it in the default policy.
+- Egress `no_auth` (send no credentials) and `dialects` (wire formats the upstream accepts; other requests skip its candidates). Decision records carry the `plan` window they saw.
+
 ## [0.2.0] - 2026-09-27
 
 ### Added

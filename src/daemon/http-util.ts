@@ -53,6 +53,18 @@ export function upstreamHeaders(
   return out;
 }
 
+const USAGE_LIKE = /ratelimit|rate-limit|usage|quota|limit|reset|window|plan|credit|primary|secondary/i;
+const NEVER_PRINT = /authorization|cookie|token|key|secret/i;
+
+/** Rate-limit and usage-like response headers, for the JEV_ROUTER_DEBUG_HEADERS diagnostic. Credentials never match. */
+export function usageLikeHeaders(h: globalThis.Headers): readonly (readonly [string, string])[] {
+  const out: [string, string][] = [];
+  h.forEach((value, key) => {
+    if (USAGE_LIKE.test(key) && !NEVER_PRINT.test(key)) out.push([key, value]);
+  });
+  return out.sort((a, b) => a[0].localeCompare(b[0]));
+}
+
 export function copyResponseHeaders(from: Response, to: ServerResponse): void {
   from.headers.forEach((value, key) => {
     if (!RESPONSE_DROP.has(key.toLowerCase())) to.setHeader(key, value);

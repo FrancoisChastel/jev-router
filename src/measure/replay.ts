@@ -37,6 +37,7 @@ function requestFrom(r: DecisionRecord): NormalizedRequest {
     ...(effort ? { requestedEffort: effort } : {}),
     ...(r.contextCompacted ? { contextCompacted: true } : {}),
     toolOutcomes: r.toolOutcomes ?? [],
+    ...(r.plan ? { planWindow: r.plan } : {}),
   };
 }
 
