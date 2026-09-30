@@ -10,6 +10,7 @@ The relay listens on `http://127.0.0.1:4141` by default. `jev-router setup` conf
 jev-router setup                 # asks for the judge key, detects logins, keys, and harnesses, configures, installs the service
 jev-router setup --dry-run       # prints every file it would write, writes nothing, installs nothing
 jev-router setup --agent codex   # one harness only
+jev-router setup --agent cursor  # prints the Cursor steps; Cursor's settings live in the app
 jev-router service status        # is the background relay up
 jev-router service uninstall     # stop and remove it
 ```
@@ -113,6 +114,47 @@ pi install npm:@french-castle/jev-router
 
 Candidates are looked up in Pi's own registry by provider and id. `via: openrouter` maps to Pi's `openrouter` provider and `via: vercel` to `vercel-ai-gateway`; set `pi.provider` or `pi.model` on a candidate to override. `/jev-router status`, `/jev-router off`, and `/jev-router on` control it, and a manual `/model` pick pauses routing until `/jev-router on`.
 
+## Cursor
+
+Cursor is the one harness `setup` cannot configure: `jev-router setup --agent cursor` (or a detected `~/.cursor`, `cursor`, or `cursor-agent`) prints the steps below and writes nothing. Two facts shape everything here, both from Cursor's documentation and the gateways that support it as of September 2026:
+
+- **Requests come from Cursor's servers, not your machine.** Cursor's API-key docs say every request is routed through Cursor's backend for prompt building, and that backend is what calls the "Override OpenAI Base URL". `http://127.0.0.1:4141` is unreachable from there; the relay needs a public HTTPS URL.
+- **The settings live inside the app.** There is no config file for the base URL, key, or custom models that we could back up and edit safely.
+
+### Steps
+
+```bash
+export JEV_ROUTER_TOKEN=$(openssl rand -hex 24)
+jev-router up --port 4142 --token "$JEV_ROUTER_TOKEN"   # a second relay, token required on every call
+jev-router expose --port 4142                           # another terminal, same JEV_ROUTER_TOKEN; needs cloudflared or ngrok
+```
+
+`expose` checks that the relay answers, rejects a request without the token, and accepts one with it; anything else and it refuses to start. It then runs `cloudflared tunnel --url http://127.0.0.1:4142` (or `ngrok http 4142` when cloudflared is missing; `--tunnel ngrok` picks it), reads the public URL from the tunnel's output, and prints what to paste into **Cursor Settings > Models**:
+
+| Field | Value |
+|---|---|
+| OpenAI API Key | the relay token |
+| Override OpenAI Base URL | `<public URL>/v1`, override switched on |
+| Custom model | `jev-router/auto` |
+
+The model is `jev-router/auto` rather than `auto`: Cursor rejects a custom model whose name matches one of its built-in models, and it has its own Auto, so a prefixed name avoids the clash. Any `<prefix>/auto` id routes like `auto`, so the policy needs no change. The relay recognizes Cursor's calls by their `User-Agent: Cursor/1.0`, uses Cursor's tool names for the tool signals, and keys sessions by the conversation prefix, since Cursor sends no session header. `expose` runs until Ctrl-C, and it re-checks the relay every five seconds and stops the tunnel if the relay starts answering without the token.
+
+The second relay is there because the background service runs without a token. Plan-backed routing depends on that: a token relay would reject Claude Code's and Codex's own logins. Keep the service for local harnesses and use the token relay only for Cursor.
+
+### What works and what does not
+
+- **Routed:** Chat and Agent requests on `jev-router/auto`, streaming included. With OpenRouter as the egress, Cursor's requests go to OpenRouter's Cursor endpoint (`/api/v1/cursor/chat/completions`). Cursor's agent sometimes sends a Responses-API body to the chat-completions path; that endpoint accepts both shapes, and the relay reads and rewrites effort in whichever shape arrives.
+- **Not routed:** Tab completion, which always uses Cursor's own models, and anything Cursor serves with its own models, including parts of Composer and its Auto mode. Background agents and the Cursor CLI (`cursor-agent`) cannot use a custom base URL at all: the CLI's `--endpoint` picks which Cursor backend it logs in to. Cursor's hooks (`~/.cursor/hooks.json`) cannot change the model and are not wired up.
+- **Vercel AI Gateway egress:** chat-shaped requests work. A Responses-shaped body goes to Vercel's chat endpoint unchanged and should be expected to fail, because Vercel has no Cursor endpoint. Use OpenRouter for Cursor's GPT-family agent traffic.
+- **Other OpenAI models in Cursor:** with the OpenAI key and the override on, Cursor sends its other OpenAI model names through the relay too. They pass through unrouted and usually fail at a gateway that names models differently. Pick `jev-router/auto`.
+
+### Security model
+
+- The relay injects your real gateway key upstream. Only the token stands between the public URL and your bill. `expose` never publishes a relay that accepts a request without it.
+- Treat the public URL and the token as secrets. The token is stored in Cursor's settings and is sent to Cursor's backend with every request. Cursor's zero-data-retention policy does not apply to requests made with your own key. Use a token made for this and nothing else.
+- Quick tunnels get a new URL each time they start. Stopping `expose` takes the URL offline, and rotating the token cuts off every copy of it.
+- A token relay answers CORS preflights, and tags responses to browser requests with `access-control-allow-origin: *`, so the desktop app can verify the key. The real request still needs the token. A relay without a token never sends CORS headers.
+
 ## Anything OpenAI-compatible
 
 Point the tool at `http://127.0.0.1:4141/v1` with model `auto`. Without harness hooks the router still has the tool results carried in the request body and the judge; it lacks only compaction notices and explicit error flags.
@@ -131,4 +173,4 @@ jev-router up --host 0.0.0.0 --token "$JEV_ROUTER_TOKEN"
 jev-router setup --token "$JEV_ROUTER_TOKEN"     # writes it as each harness's credential
 ```
 
-Every request must then carry it as a bearer token or `x-api-key`, because the relay injects your real provider key upstream.
+Every request must then carry it as a bearer token or `x-api-key`, because the relay injects your real provider key upstream. For callers on the public internet, such as Cursor's servers, keep the relay on loopback and publish it with `jev-router expose` (see [Cursor](#cursor)) instead of binding `0.0.0.0`.

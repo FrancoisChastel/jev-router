@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolvePolicyPath } from "../runtime/paths";
+import { cursorSetupSteps } from "./expose";
 import {
   type HarnessAuth,
   type JsonObject,
@@ -12,8 +13,10 @@ import {
   type SetupTarget,
 } from "./plans";
 
-export type Agent = "claude-code" | "codex" | "opencode" | "pi";
-export const AGENTS: readonly Agent[] = ["claude-code", "codex", "opencode", "pi"];
+export type Agent = "claude-code" | "codex" | "opencode" | "pi" | "cursor";
+export const AGENTS: readonly Agent[] = ["claude-code", "codex", "opencode", "pi", "cursor"];
+
+const DEFAULT_PORT = 4141;
 
 export interface SetupOptions {
   readonly agents: readonly Agent[];
@@ -108,6 +111,8 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
       const bundle = opts.openCodePluginPath ? await readText(opts.openCodePluginPath) : undefined;
       if (bundle) await writeWithBackup(join(home, ".config", "opencode", "plugins", "jev-router.js"), bundle, opts);
       else opts.log("  plugin bundle not found next to the CLI; sensors skipped (model routing still works through the provider)");
+    } else if (agent === "cursor") {
+      for (const line of cursorSetupSteps(Number(new URL(opts.baseUrl).port) || DEFAULT_PORT)) opts.log(line);
     } else {
       opts.log("  run: pi install npm:jev-router   (in-process extension; no relay needed)");
     }

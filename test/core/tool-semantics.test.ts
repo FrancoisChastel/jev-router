@@ -12,6 +12,10 @@ describe("tool semantics", () => {
     expect(classifyTool("write", "pi")).toBe("mutate");
     expect(classifyTool("grep", "pi")).toBe("observe");
     expect(classifyTool("todowrite", "opencode")).toBe("plan");
+    expect(classifyTool("codebase_search", "cursor")).toBe("observe");
+    expect(classifyTool("edit_file", "cursor")).toBe("mutate");
+    expect(classifyTool("todo_write", "cursor")).toBe("plan");
+    expect(classifyTool("run_terminal_cmd", "cursor")).toBe("shell");
   });
 
   test("generic fallback by name pattern, case-insensitive", () => {

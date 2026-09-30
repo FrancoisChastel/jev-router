@@ -2,7 +2,7 @@
 export type Effort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_ORDER: readonly Effort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
-export type Harness = "pi" | "claude-code" | "codex" | "opencode" | "hermes" | "unknown";
+export type Harness = "pi" | "claude-code" | "codex" | "opencode" | "cursor" | "hermes" | "unknown";
 
 /** Request class as reported by Claude Code gateway hint headers; other harnesses map into it. */
 export type RequestClass = "main" | "subagent" | "workflow" | "compaction" | "auxiliary";

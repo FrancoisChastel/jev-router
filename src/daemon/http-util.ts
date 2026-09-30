@@ -64,6 +64,8 @@ export function detectHarness(h: Headers): Harness {
   if (h["x-claude-code-session-id"] || ua.includes("claude-cli") || ua.includes("claude-code")) return "claude-code";
   if ((h.originator ?? "").toLowerCase().includes("codex") || ua.includes("codex")) return "codex";
   if (h["x-opencode-session"] || ua.includes("opencode")) return "opencode";
+  // Cursor's backend calls a custom OpenAI base URL with `User-Agent: Cursor/1.0` (LiteLLM's Cursor guide, 2026).
+  if (ua.startsWith("cursor/")) return "cursor";
   if (ua.includes("pi-coding-agent") || ua.startsWith("pi/")) return "pi";
   return "unknown";
 }

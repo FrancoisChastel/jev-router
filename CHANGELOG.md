@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Cursor support for Chat and Agent. `jev-router expose` publishes a token-guarded relay through cloudflared (or ngrok) and prints the base URL, key, and model (`jev-router/auto`) to paste into Cursor. It refuses a relay that is down, that answers without a token, or that rejects the given token, and it stops the tunnel if the relay later starts answering without one. `setup --agent cursor` (also detected from `~/.cursor`, `cursor`, or `cursor-agent`) prints the steps and writes nothing, since Cursor calls custom endpoints from its own servers and keeps its settings in the app.
+- The relay detects Cursor by `User-Agent: Cursor/1.0`, classifies Cursor's tool names, sends Cursor's chat requests bound for OpenRouter to OpenRouter's Cursor endpoint, and reads and rewrites a Responses-shaped body that arrives on the chat-completions path in that shape.
+- A relay running with `--token` answers CORS preflights and adds `access-control-allow-origin: *` to responses for browser requests, so Cursor's desktop app can verify the key. A relay without a token still sends no CORS headers.
+
 ## [0.2.0] - 2026-09-27
 
 ### Added

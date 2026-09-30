@@ -5,6 +5,7 @@ import type { DecisionRecord } from "../core/record";
 import type { Harness, RequestClass, ToolOutcome } from "../core/types";
 import type { FetchLike } from "../judge/http";
 import type { Judge } from "../judge/types";
+import { corsResponseHeaders, isPreflight, preflightHeaders } from "./cors";
 import { DIALECTS } from "./dialects";
 import { asEffort, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
 import { claudeCodeHookToObserve, codexHookToObserve } from "./hooks";
@@ -55,7 +56,7 @@ export interface RunningDaemon {
 }
 
 const DEFAULT_MAX_BODY = 64 * 1024 * 1024;
-const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "hermes", "unknown"]);
+const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "cursor", "hermes", "unknown"]);
 const OBSERVE_KINDS: ReadonlySet<string> = new Set(["tool_result", "compaction", "api_error", "subagent_start", "prompt"]);
 
 function dialectForPath(path: string): DialectAdapter | undefined {
@@ -175,6 +176,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     const path = url.pathname;
     const method = req.method ?? "GET";
     const headers = flattenHeaders(req);
+
+    if (opts.token) {
+      if (isPreflight(method, headers)) {
+        res.writeHead(204, preflightHeaders(headers));
+        res.end();
+        return;
+      }
+      for (const [k, v] of Object.entries(corsResponseHeaders(headers))) res.setHeader(k, v);
+    }
 
     const isProbe = method === "HEAD" && path === "/api/hello";
     if (opts.token && path !== "/healthz" && !isProbe && !presentsToken(headers, opts.token)) {

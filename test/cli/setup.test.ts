@@ -53,6 +53,35 @@ describe("runSetup", () => {
   });
 });
 
+describe("runSetup for Cursor", () => {
+  test("prints the tunnel, key, and model steps and writes nothing", async () => {
+    const home = await mkdtemp(join(tmpdir(), "jev-home-"));
+    const routerHome = await mkdtemp(join(tmpdir(), "jev-router-home-"));
+    const previous = process.env.JEV_ROUTER_HOME;
+    process.env.JEV_ROUTER_HOME = routerHome;
+    try {
+      const lines: string[] = [];
+      await runSetup({
+        agents: ["cursor"],
+        baseUrl: "http://127.0.0.1:5000",
+        hookCommand: "/bin/jev-router",
+        home,
+        dryRun: false,
+        log: (l) => lines.push(l),
+      });
+      const text = lines.join("\n");
+      expect(text).toContain("cursor:");
+      expect(text).toContain("jev-router up --port 5001 --token");
+      expect(text).toContain("jev-router expose --port 5001");
+      expect(text).toContain("jev-router/auto");
+      expect(await exists(join(home, ".cursor"))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.JEV_ROUTER_HOME;
+      else process.env.JEV_ROUTER_HOME = previous;
+    }
+  });
+});
+
 describe("forwardHook", () => {
   test("posts the payload with the token and always returns an empty hook result", async () => {
     let seen: { url: string; auth: string | null; body: string } | undefined;
