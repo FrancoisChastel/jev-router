@@ -8,6 +8,12 @@ describe("policy loading", () => {
     expect(tierOrder(p, "default")).toEqual(["fast", "mid", "frontier"]);
   });
 
+  test("a hand-written policy without switch keeps both switch behaviours off", () => {
+    const raw = minimalPolicy();
+    delete raw.policies.default.switch;
+    expect(loadPolicy(raw).policies.default?.switch).toEqual({ cache_penalty: false, prefer_effort_over_model: false });
+  });
+
   test("explicit order wins", () => {
     const raw = minimalPolicy();
     raw.policies.default.order = ["frontier", "fast", "mid"];

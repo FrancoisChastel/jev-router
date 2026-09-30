@@ -4,7 +4,7 @@ import { getPolicyDef } from "../../core/policy";
 import type { Cascade, Policy } from "../../core/policy/types";
 import type { CascadeAttempt, CascadeRecord, TokenUsage } from "../../core/record";
 import type { Decision } from "../../core/types";
-import type { JsonObject } from "../dialects/types";
+import type { DialectAdapter, JsonObject } from "../dialects/types";
 import {
   callUpstream,
   deliver,
@@ -30,6 +30,10 @@ export interface CascadeRun {
   readonly policyId: string;
   readonly config: Cascade;
   readonly decided: Decided;
+  /** Rewrites the body; differs from the path's dialect when Cursor sends a Responses body on the chat path. */
+  readonly shape: DialectAdapter;
+  /** The request as addressed to one egress (Cursor traffic to OpenRouter takes its Cursor path). */
+  readonly toTarget: (target: Target) => RelayRequest;
   /** Headers every response carries regardless of which tier serves. */
   readonly routingHeaders: (served: Decision) => Record<string, string>;
 }
@@ -62,12 +66,13 @@ export async function runCascade(run: CascadeRun): Promise<void> {
       return progress.held ? fallBack(run, progress) : giveUp(run, progress, { kind: "no_key", error, clientError: error });
     }
     const next = retry < run.config.max_retries ? nextTier(policy, run.policyId, run.decided.request, decision) : undefined;
-    const rewritten = run.r.dialect.rewrite(run.body, decision);
-    const call = await callUpstream(run.deps, run.r, target, rewritten);
+    const rewritten = run.shape.rewrite(run.body, decision);
+    const call = await callUpstream(run.deps, run.toTarget(target), target, rewritten);
     if (!next) return finalAttempt(run, progress, decision, target, call);
 
     const settled = await settleAttempt({
       config: run.config,
+      // The reply is in the path's dialect: Cursor's Responses bodies on the chat path are answered as chat chunks.
       dialect: run.r.dialect.dialect,
       decision,
       candidate,

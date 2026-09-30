@@ -71,8 +71,8 @@ Client-visible model ids. `auto` is the generic route, and any `<prefix>/auto` m
 | `confidence_threshold` | 0.5 | Ambiguous band for the deterministic tool-signal score. Must be at least 0.462, the value one axis alone can reach |
 | `recent_turn_window` | 3 | Tool-outcome batches considered by the scorer |
 | `est_output_tokens` | 600 | Used for counterfactual cost estimates at decision time |
-| `switch.cache_penalty` | false | Reserved for expected-value switching |
-| `switch.prefer_effort_over_model` | false | Turn a one-tier escalation into a higher effort on the current model when it has headroom |
+| `switch.cache_penalty` | false | Weigh the prompt cache a model switch drops against what the switch saves; see [switch](#switch) |
+| `switch.prefer_effort_over_model` | false | Raise effort on the current model before escalating to the next one; see [switch](#switch) |
 | `tool_semantics` | built-in per harness | Extra tool names per class: `observe`, `mutate`, `plan`, `new`, `shell` |
 | `cascade` | off | Retry a failed-looking response one tier up within the same turn; see [Cascade](#cascade) |
 
@@ -150,3 +150,27 @@ The default rules:
 These thresholds were calibrated on a Terminal-Bench subset (see [evaluation.md](./evaluation.md#results)): a single failed tool call or a moderately hard-looking task is not enough to leave the fast tier; repeated failure, spinning, or a hard task that also needs careful reasoning is.
 
 Compaction is handled by a built-in override and is not a rule identifier.
+
+### switch
+
+Two switches decide how a policy moves between models. Both are off in a hand-written policy that leaves them out, and both are on in every policy `init` and `setup` generate (`default`, `claude-code`, `codex`).
+
+**`prefer_effort_over_model`: effort first, model second.** When a decision would move up the ladder because of an `up` action or a decisive tool-signal escalation, the router first raises the reasoning effort on the current candidate by one level and keeps it, with the reason `effort_first`. The level in use is the session's current effort, else the request's effort, else the candidate's `default_effort`, else the middle of its `effort` list. Only when effort is already at the candidate's top level (or it has no `effort` list) does the model switch. A `pin`, an `at_least` (the stakes rules), a `default` above the current tier, and the hard overrides (compaction, repeated failures, critical errors) always switch model. Downward moves are unaffected. Effort is cheaper than a new model and keeps the prompt cache.
+
+**`cache_penalty`: cache-aware switching.** Prompt caches are per model, so a switch re-sends the cached prefix at full price. The daemon keeps the usage the upstream reported for the session's previous response; when it includes cache reads and the decision would move to another model, the router estimates:
+
+- `penaltyUsd`, paid once: the cached prefix re-sent at the new model's full input price, minus the discounted read staying would have paid, never below zero: `cacheRead × (to.in − 0.1 × from.in) / 1M`. The 0.1 is the usual 90% cache-read discount.
+- `savingUsd`, over the horizon: after the first turn the prefix is read at cached rates on either model, so only the new input tokens and the output pay full price: `((from.in − to.in) × (0.1 × cacheRead + max(0, estInput − cacheRead)) + (from.out − to.out) × est_output_tokens) / 1M`, times `recent_turn_window` turns. `estInput` is the request's estimated input tokens.
+
+Worked example, Opus to Sonnet at the plan-backed default prices (Opus $4 in / $20 out, Sonnet $2 / $10 per million), a 40k-token cached prefix, 2k new input tokens (42k in total), `est_output_tokens` 600:
+
+| | Formula | USD |
+|---|---|---|
+| Penalty | 40,000 × (2 − 0.1 × 4) / 1M | 0.064 |
+| Saving per turn | ((4 − 2) × (0.1 × 40,000 + 2,000) + (20 − 10) × 600) / 1M | 0.018 |
+| Saving, `recent_turn_window` 3 | 3 × 0.018 | 0.054: below the penalty, the downgrade is blocked |
+| Saving, `recent_turn_window` 4 | 4 × 0.018 | 0.072: above the penalty, the session moves to Sonnet |
+
+With a 20k cached prefix and the same 2k new tokens, the penalty falls to 0.032 and the three-turn saving is 3 × ((2 × (2,000 + 2,000) + 6,000) / 1M) = 0.042, so the downgrade goes through.
+
+When the rules move a judged turn down to a cheaper model and the saving is below the penalty, the current model is kept, with the reason `cache_penalty_blocked`. Upgrades are never blocked: quality comes first. A `pin` (such as auxiliary requests to the fast tier) is not weighed. Every decision that switches model with known cache reads, and every blocked one, carries both numbers as `decision.cache: { penaltyUsd, savingUsd }` in the log, so the reason can be checked. Without reported usage (first turn, a harness whose responses carry none, or the in-process Pi adapter) nothing changes. `replay` feeds the recorded usage back, so it sees what the live router saw.

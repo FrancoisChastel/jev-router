@@ -64,6 +64,8 @@ export function detectHarness(h: Headers): Harness {
   if (h["x-claude-code-session-id"] || ua.includes("claude-cli") || ua.includes("claude-code")) return "claude-code";
   if ((h.originator ?? "").toLowerCase().includes("codex") || ua.includes("codex")) return "codex";
   if (h["x-opencode-session"] || ua.includes("opencode")) return "opencode";
+  // Cursor's backend calls a custom OpenAI base URL with `User-Agent: Cursor/1.0` (LiteLLM's Cursor guide, 2026).
+  if (ua.startsWith("cursor/")) return "cursor";
   if (ua.includes("pi-coding-agent") || ua.startsWith("pi/")) return "pi";
   return "unknown";
 }
@@ -92,9 +94,23 @@ export function readJsonBody(req: IncomingMessage, limitBytes: number): Promise<
   });
 }
 
+/**
+ * Whether a request declares a JSON body. Browsers can send a cross-origin POST without a preflight only as
+ * text/plain, form, or multipart, so requiring JSON keeps a web page from spending the keys a loopback relay injects.
+ */
+export function declaresJson(h: Headers): boolean {
+  return (h["content-type"] ?? "").toLowerCase().includes("application/json");
+}
+
 export function errorBody(dialect: Dialect | undefined, status: number, message: string): string {
   const type =
-    status === 400 ? "invalid_request_error" : status === 401 ? "authentication_error" : status === 404 ? "not_found_error" : "api_error";
+    status === 400 || status === 415
+      ? "invalid_request_error"
+      : status === 401
+        ? "authentication_error"
+        : status === 404
+          ? "not_found_error"
+          : "api_error";
   if (dialect === "anthropic") return JSON.stringify({ type: "error", error: { type, message } });
   return JSON.stringify({ error: { message, type, code: null } });
 }

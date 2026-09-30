@@ -1,7 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
   "files": {
-    "includes": ["src/**", "test/**", "*.json"]
+    "includes": ["src/**", "test/**", "*.json", "!.claude/**"]
   },
   "formatter": {
     "enabled": true,

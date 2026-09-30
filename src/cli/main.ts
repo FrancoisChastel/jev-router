@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
@@ -17,7 +17,17 @@ import { createJudge } from "../runtime/judge-factory";
 import { JsonlLogger } from "../runtime/log";
 import { configDir, decisionsLogPath, resolvePolicyPath } from "../runtime/paths";
 import { readPolicyFile } from "../runtime/policy-file";
-import { defaultProbe, detectAgents } from "./detect-agents";
+import { defaultProbe, detectAgents, executableOnPath } from "./detect-agents";
+import {
+  cursorPasteValues,
+  parseExposeOptions,
+  parseTunnelUrl,
+  pickTunnel,
+  probeRelayAuth,
+  refusal,
+  TUNNEL_INSTALL_HINTS,
+  type TunnelCommand,
+} from "./expose";
 import { claudeCodeBehavesAs, harnessAuth } from "./plans";
 import { installService, type ServiceDeps, type ServiceSpec, serviceState, uninstallService } from "./service";
 import { AGENTS, type Agent, runSetup } from "./setup";
@@ -39,9 +49,14 @@ const USAGE = `jev-router <command>
                                         one command: take the judge key (asked for once, stored in ~/.jev-router/env),
                                         detect your Claude Code and Codex logins and installed harnesses, write the
                                         policy, point each harness at the relay, install the relay as a background
-                                        service, and check it answers. agents: claude-code, codex, opencode, pi
+                                        service, and check it answers. agents: claude-code, codex, opencode, pi, cursor
+                                        (cursor: prints the steps; its settings live in the app)
   service install|uninstall|status [--port 4141]
                                         manage the background relay (launchd on macOS, systemd --user on Linux)
+  expose [--port 4141] [--token <secret>] [--tunnel cloudflared|ngrok]
+                                        publish a token-guarded relay through a tunnel (cloudflared, else ngrok) and
+                                        print the base URL, key, and model to paste into Cursor; refuses a relay that
+                                        answers without the token (--token or JEV_ROUTER_TOKEN)
   hook <claude-code|codex>              forward a native hook payload from stdin to the relay (used by hook packs)
   policy                                validate the policy file and print where it was read from
   version | --version
@@ -303,7 +318,7 @@ async function setup(args: readonly string[]): Promise<void> {
   // 3. Every harness that is actually installed, unless told which.
   const detected = requested.length > 0 ? [] : await detectAgents(defaultProbe(homedir()));
   const agents = (requested.length > 0 ? requested : detected) as readonly Agent[];
-  if (agents.length === 0) log("harnesses: none of claude-code, codex, opencode, pi found; pass --agent to configure one anyway");
+  if (agents.length === 0) log(`harnesses: none of ${AGENTS.join(", ")} found; pass --agent to configure one anyway`);
   else log(`harnesses: ${agents.join(", ")}${requested.length > 0 ? "" : " (installed)"}`);
   await runSetup({
     agents,
@@ -336,6 +351,74 @@ async function setup(args: readonly string[]): Promise<void> {
       ? `relay: answering on ${baseUrl}; you are done`
       : `relay: not answering yet; check ${configDir(process.env)}/relay.log`,
   );
+}
+
+const TUNNEL_URL_TIMEOUT_MS = 30_000;
+const RELAY_RECHECK_MS = 5_000;
+const TUNNEL_OUTPUT_KEEP_CHARS = 16_384;
+
+/** Publish a token-guarded relay through cloudflared or ngrok and print what Cursor needs. Runs until Ctrl-C. */
+async function expose(args: readonly string[]): Promise<void> {
+  const o = parseExposeOptions(args, process.env);
+  const baseUrl = `http://127.0.0.1:${o.port}`;
+  const state = await probeRelayAuth(fetch, baseUrl, o.token);
+  if (state !== "guarded") {
+    console.error(refusal(state, o.port));
+    process.exitCode = 1;
+    return;
+  }
+  const tunnel = await pickTunnel(o.port, (b) => executableOnPath(b), o.tunnel);
+  if (!tunnel) {
+    for (const line of TUNNEL_INSTALL_HINTS) console.error(line);
+    process.exitCode = 1;
+    return;
+  }
+  console.error(`relay on ${baseUrl} requires its token; starting ${tunnel.command} ${tunnel.args.join(" ")}`);
+  process.exitCode = await runTunnel(tunnel, o.token, baseUrl);
+}
+
+/** Spawn the tunnel, print Cursor's values once its URL appears, and stop it if the relay ever answers without a token. */
+function runTunnel(tunnel: TunnelCommand, token: string, baseUrl: string): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(tunnel.command, [...tunnel.args], { stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    let url: string | undefined;
+    let failure: string | undefined;
+    const stop = (reason?: string) => {
+      if (reason && !failure) failure = reason;
+      child.kill("SIGTERM");
+    };
+    const onData = (chunk: Buffer) => {
+      if (url) return;
+      output = (output + chunk.toString("utf8")).slice(-TUNNEL_OUTPUT_KEEP_CHARS);
+      url = parseTunnelUrl(tunnel.kind, output);
+      if (url) for (const line of cursorPasteValues(url, token)) console.log(line);
+    };
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
+    const timer = setTimeout(() => {
+      if (!url) stop(`${tunnel.command} printed no public URL within ${TUNNEL_URL_TIMEOUT_MS / 1000}s`);
+    }, TUNNEL_URL_TIMEOUT_MS);
+    // The relay behind the tunnel could be restarted without a token; never keep publishing it if so.
+    const watchdog = setInterval(() => {
+      void probeRelayAuth(fetch, baseUrl, token).then((s) => {
+        if (s === "open" || s === "token-rejected") stop(`tunnel stopped: ${refusal(s, Number(new URL(baseUrl).port))}`);
+      });
+    }, RELAY_RECHECK_MS);
+    const onSignal = () => stop();
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    child.on("error", (e) => stop(`${tunnel.command} failed to start: ${e.message}`));
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      clearInterval(watchdog);
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      if (failure) console.error(failure);
+      else if (!url) console.error(`${tunnel.command} exited (${code ?? "signal"}) before printing a public URL:\n${output.slice(-2000)}`);
+      resolve(failure || !url ? 1 : 0);
+    });
+  });
 }
 
 /** Forward a native hook payload to the relay. Returns the hook output; never throws so the harness is never blocked. */
@@ -444,6 +527,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   if (command === "up") return up(rest);
   if (command === "setup") return setup(rest);
   if (command === "service") return service(rest);
+  if (command === "expose") return expose(rest);
   if (command === "hook") return hook(rest);
   if (command === "stats") return stats(rest);
   if (command === "replay") return replayCmd(rest);

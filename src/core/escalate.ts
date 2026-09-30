@@ -1,4 +1,5 @@
-import { isCapable, resolveEffort } from "./decide";
+import { isCapable } from "./decide";
+import { resolveEffort } from "./effort";
 import { getPolicyDef } from "./policy";
 import type { Candidate, Policy } from "./policy/types";
 import type { Decision, Effort, NormalizedRequest, SessionState } from "./types";

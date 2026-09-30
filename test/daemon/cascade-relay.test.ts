@@ -161,6 +161,8 @@ describe("cascade: retry one tier up", () => {
     expect(record.usage).toEqual({ inputTokens: 2000, outputTokens: 200 });
     expect(record.apply).toEqual({ ok: true });
     expect(h.daemon.store.get("cc:c-empty")?.current?.candidate).toBe("mid");
+    // Cache-aware switching sees the served attempt's usage, the model the session now continues on.
+    expect(h.daemon.store.get("cc:c-empty")?.lastUsage).toEqual({ inputTokens: 1000, outputTokens: 100 });
 
     const stats = summarize(h.records, h.policy);
     expect(stats.actualCostUsd).toBeCloseTo(0.00021 + 0.0045, 8);
@@ -273,6 +275,34 @@ describe("cascade: retry one tier up", () => {
     script = { [FAST]: streams(anthropicStream(FAST)) };
     await (await ask(h.daemon, "c-nobuffer-2")).text();
     expect(calls).toEqual([FAST]);
+  });
+});
+
+describe("cascade: cursor", () => {
+  const chatChunks = (model: string, text: string) => [
+    `data: ${JSON.stringify({ id: "c", model, choices: [{ index: 0, delta: { role: "assistant", content: "" } }] })}\n\n`,
+    ...(text ? [`data: ${JSON.stringify({ id: "c", model, choices: [{ index: 0, delta: { content: text } }] })}\n\n`] : []),
+    `data: ${JSON.stringify({ id: "c", model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+
+  test("a Responses-shaped body on the chat path is rewritten per tier and its chat-shaped reply assessed", async () => {
+    const h = await start({});
+    script = { [FAST]: streams(chatChunks(FAST, "")), [MID]: streams(chatChunks(MID, "fixed")) };
+    const res = await fetch(`${h.daemon.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "Cursor/1.0", "x-session-id": "c-cursor" },
+      body: JSON.stringify({
+        model: "auto",
+        stream: true,
+        input: [{ role: "user", content: [{ type: "input_text", text: "fix the test" }] }],
+      }),
+    });
+    const text = await res.text();
+    expect(calls).toEqual([FAST, MID]);
+    expect(text).toContain("fixed");
+    expect(res.headers.get("x-jev-router-cascade")).toBe("fast->mid (empty)");
+    expect(h.records[0]!.harness).toBe("cursor");
   });
 });
 

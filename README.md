@@ -66,6 +66,7 @@ Edit `~/.jev-router/policy.json` to change models, prices, or rules. `jev-router
 3. **Tool signals.** Recent tool outcomes are scored the way NVIDIA's Switchyard does it: error severity, spinning, and exploring push toward a capable model, steady production pushes toward a cheap one. A decisive score skips the judge.
 4. **The judge.** On a new user turn, or when the signals are ambiguous, one jev call answers five task questions or three execution questions against a bounded summary. jev never sees the full conversation. It costs about three thousandths of a cent and returns in a few hundred milliseconds.
 5. **Policy.** Plain rules map the answers to a candidate and an effort. Low confidence on a question a rule depends on keeps the current tier.
+6. **Switch cost.** An escalation first raises reasoning effort on the current model and changes model only once effort is maxed out. A downgrade that would drop more prompt cache than it saves over the next few turns is skipped. Stakes rules and hard overrides still switch at once.
 
 Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the decision and its reasons, whether it took effect, the tokens the upstream reported, and the cost on every other candidate.
 
@@ -77,8 +78,9 @@ Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the 
 | Codex | Local relay as a Responses-API model provider, on your ChatGPT login or a gateway key | Hooks report tool results, compaction, prompts |
 | OpenCode | Local relay as an OpenAI-compatible provider | Plugin tags requests with the session and reports tool results, compaction, API errors |
 | Pi | In-process extension, no relay | Everything: prompts, tool results, compaction, model changes |
+| Cursor (Chat and Agent) | A token-guarded relay published by `jev-router expose`, set as Cursor's OpenAI base URL; Tab and the Cursor CLI are not routed | The request body only: its tool results; no hooks |
 
-`jev-router setup` configures whichever of the four are installed, backs up every file it touches, and keeps the relay running as a background service. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
+`jev-router setup` configures whichever of the first four are installed, backs up every file it touches, and keeps the relay running as a background service. Cursor calls the relay from its own servers, so `setup` prints its steps instead of writing files. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
 
 ## Measure before believing
 

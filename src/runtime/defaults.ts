@@ -261,7 +261,7 @@ const policyDef = (defaultId: string, order: readonly string[], rules: readonly 
   hold_turns: 2,
   confidence_threshold: 0.5,
   rules: [...rules],
-  switch: { cache_penalty: true, prefer_effort_over_model: false },
+  switch: { cache_penalty: true, prefer_effort_over_model: true },
 });
 
 /** Build a complete, valid policy document from the detected keys and the curated candidates. */

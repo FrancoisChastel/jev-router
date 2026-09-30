@@ -6,8 +6,10 @@ import { resolveSessionKey } from "../core/session";
 import type { Decision, Harness } from "../core/types";
 import type { FetchLike } from "../judge/http";
 import { runCascade } from "./cascade/run";
+import { cursorUpstreamPath, isResponsesShaped } from "./cursor";
+import { DIALECTS } from "./dialects";
 import { type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
-import { defaultEgress, egressFor, forward } from "./forward";
+import { defaultEgress, egressFor, forward, type Target } from "./forward";
 import { copyResponseHeaders, detectHarness, errorBody, type Headers, requestClassOf, sendJson, upstreamHeaders } from "./http-util";
 import type { Decided, RouterService } from "./service";
 
@@ -36,6 +38,16 @@ function findRoute(policy: Policy, id: string, harness: Harness): RouteInput | u
     if (generic) return generic;
   }
   return policy.routes.find((r) => r.id === "*");
+}
+
+/** The request as it should leave for `target`: only Cursor traffic has its path adjusted. */
+function forTarget(r: RelayRequest, harness: Harness, target: Target): RelayRequest {
+  return harness === "cursor" ? { ...r, path: cursorUpstreamPath(target.egress.base_url, r.path) } : r;
+}
+
+/** How to read and rewrite the body: by its shape when a Responses body arrives on the chat path (Cursor does this). */
+function bodyDialect(r: RelayRequest, body: JsonObject): DialectAdapter {
+  return r.dialect.dialect === "openai-chat" && isResponsesShaped(body) ? DIALECTS["openai-responses"] : r.dialect;
 }
 
 export interface RelayRequest {
@@ -68,7 +80,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
   }
 
   const harness = detectHarness(r.headers);
-  const normalized = r.dialect.normalize(body);
+  const shape = bodyDialect(r, body);
+  const normalized = shape.normalize(body);
   const route = findRoute(policy, normalized.requestedModel, harness);
 
   // Unknown model ids pass straight through to the default egress with credentials swapped and nothing rewritten.
@@ -79,7 +92,7 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
       sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, "no egress configured for passthrough"));
       return;
     }
-    await forward(deps, r, target, body, { source: "passthrough" });
+    await forward(deps, forTarget(r, harness, target), target, body, { source: "passthrough" });
     return;
   }
 
@@ -125,11 +138,13 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
       policyId: route.policy,
       config: cascade,
       decided,
+      shape,
+      toTarget: (target) => forTarget(r, harness, target),
       routingHeaders: (served) => routingHeaders(served, decided.decision),
     });
     return;
   }
-  await serveDecision(deps, r, body, normalized.requestedModel, decided);
+  await serveDecision(deps, r, body, normalized.requestedModel, decided, { shape, toTarget: (target) => forTarget(r, harness, target) });
 }
 
 function routingHeaders(served: Decision, decision: Decision): Record<string, string> {
@@ -142,7 +157,20 @@ function routingHeaders(served: Decision, decision: Decision): Record<string, st
 }
 
 /** Forward a routed request once, on the decided candidate or, in shadow mode, on the shadow candidate. */
-async function serveDecision(deps: RelayDeps, r: RelayRequest, body: JsonObject, requestedModel: string, decided: Decided): Promise<void> {
+/** How a routed body is read and rewritten, and how the request is addressed to each egress. */
+interface Addressing {
+  readonly shape: DialectAdapter;
+  readonly toTarget: (target: Target) => RelayRequest;
+}
+
+async function serveDecision(
+  deps: RelayDeps,
+  r: RelayRequest,
+  body: JsonObject,
+  requestedModel: string,
+  decided: Decided,
+  addressing: Addressing,
+): Promise<void> {
   const { policy } = deps;
   const servedId = deps.shadow && policy.candidates[deps.shadow] ? deps.shadow : decided.decision.candidate;
   const candidate = policy.candidates[servedId];
@@ -154,7 +182,7 @@ async function serveDecision(deps: RelayDeps, r: RelayRequest, body: JsonObject,
     return;
   }
   const served = shadow && candidate ? { ...decided.decision, candidate: servedId, model: candidate.model } : decided.decision;
-  await forward(deps, r, target, r.dialect.rewrite(body, served), {
+  await forward(deps, addressing.toTarget(target), target, addressing.shape.rewrite(body, served), {
     source: shadow ? "shadow" : decided.decision.source,
     requestedModel,
     extraHeaders: routingHeaders(served, decided.decision),
