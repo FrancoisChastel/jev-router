@@ -1,7 +1,7 @@
 {
   "name": "jev-router",
   "displayName": "jev-router",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Sensors for the jev-router relay: tool outcomes, compaction, subagents, and API failures reach the router without body parsing.",
   "author": {
     "name": "Francois Chastel"

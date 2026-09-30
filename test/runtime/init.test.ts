@@ -170,6 +170,13 @@ describe("subscription-backed policies", () => {
     expect(tierOrder(p, "codex")).toEqual(["codex-fast", "codex-frontier"]);
     expect(p.policies.codex?.rules.map((r) => r.then)).not.toContainEqual({ at_least: "codex-mid" });
     expect(codexTiers([], catalog)).toEqual([]);
+    const withAuto = [{ slug: "auto", effort: [], priority: 0, listed: true }, ...models];
+    expect(
+      codexTiers(
+        withAuto,
+        new Map([...catalog, ["openai/auto", { id: "openai/auto", price: { in: 0.01, out: 0.01 }, vision: true, tools: true }]]),
+      ).map((x) => x.model.slug),
+    ).toEqual(["a", "b"]);
     expect(
       load(
         buildDefaultPolicy({ detection: detectKeys({}), subscriptions: { chatgpt: { plan: "plus", models: [], modelsFrom: "cache" } } }),

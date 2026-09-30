@@ -1,6 +1,6 @@
 # jev-router design
 
-Status: v0.2.0 shipped 2026-09-28 (npm `@french-castle/jev-router`). Agreed in brainstorm on 2026-09-27; this document records what we decided, why, and what is still open, and is kept current as decisions are added to section 13.
+Status: v0.3.0, 2026-09-29 (npm `@french-castle/jev-router`). Agreed in brainstorm on 2026-09-27; this document records what we decided, why, and what is still open, and is kept current as decisions are added to section 13.
 
 ## 1. What this is
 

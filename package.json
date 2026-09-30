@@ -1,6 +1,6 @@
 {
   "name": "@french-castle/jev-router",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Route each coding-agent turn to the cheapest model that can finish it. Switchyard-style execution signals, TypeSafe's jev as the judge, and honest cost accounting. Works with Claude Code, Codex, OpenCode, and Pi.",
   "keywords": [
     "llm",

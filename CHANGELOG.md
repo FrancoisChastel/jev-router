@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-29
+
 ### Added
 
 - Gemini CLI support. A `gemini` dialect for the Gemini API (`/v1beta/models/{model}:streamGenerateContent` and `:generateContent`, model rewritten in the path) and a `gemini-code-assist` dialect for Gemini CLI's Google-login backend (`/v1internal:streamGenerateContent`, model in the body). Both echo the requested id in `modelVersion`, meter `usageMetadata` (thinking tokens as output, cached content as cache reads), map a client-sent `thinkingLevel` to effort, and read tool outcomes from trailing `functionResponse` parts (`response.error` or a shell `Exit Code: N` is a failure). `x-goog-api-key` is the injected key header for these dialects and is accepted as the relay token.

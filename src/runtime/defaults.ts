@@ -281,7 +281,8 @@ interface PricedCodexModel {
 export function codexTiers(models: readonly CodexModel[], catalog?: ReadonlyMap<string, CatalogEntry>): readonly PricedCodexModel[] {
   const priced: PricedCodexModel[] = [];
   for (const model of models) {
-    if (!model.listed) continue;
+    // The relay adds an `auto` entry to the catalog Codex caches; it is a route, never a candidate.
+    if (!model.listed || model.slug === "auto") continue;
     const price = catalog?.get(`openai/${model.slug}`)?.price ?? CODEX_KNOWN_PRICES[model.slug];
     if (price) priced.push({ model, price });
   }
