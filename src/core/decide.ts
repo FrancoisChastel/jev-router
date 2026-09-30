@@ -1,22 +1,24 @@
 import type { Answer, JudgeRequest } from "../judge/types";
+import { estimateSwitch } from "./cache";
 import { counterfactualCosts } from "./cost";
 import { buildDossier, type DossierOptions } from "./dossier";
+import { effortStepUp, higherEffort, resolveEffort } from "./effort";
 import { getPolicyDef } from "./policy";
 import type { ExprContext, ExprValue } from "./policy/expr";
 import type { Candidate, EgressInput, Policy, PolicyDef, RuleAction } from "./policy/types";
 import { executionPhaseQuestions, taskPhaseQuestions } from "./questions";
 import { advanceSession } from "./session";
 import { type StageScore, scoreStage } from "./signals/stage";
-import {
-  type CurrentAssignment,
-  type Decision,
-  type DecisionSource,
-  EFFORT_ORDER,
-  type Effort,
-  type Lease,
-  type NormalizedRequest,
-  type SessionState,
-  type WireDialect,
+import type {
+  CurrentAssignment,
+  Decision,
+  DecisionSource,
+  Effort,
+  Lease,
+  NormalizedRequest,
+  SessionState,
+  SwitchCostEstimate,
+  WireDialect,
 } from "./types";
 
 /** A lease never outlives this many turns even without an error or a new user turn. */
@@ -97,21 +99,6 @@ function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
   return true;
 }
 
-function sortedEfforts(candidate: Candidate): readonly Effort[] {
-  return [...(candidate.effort ?? [])].sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
-}
-
-function resolveEffort(candidate: Candidate, wanted: Effort | undefined): { effort?: Effort; clamped: boolean } {
-  const supported = sortedEfforts(candidate);
-  if (supported.length === 0) return { clamped: false };
-  const want = wanted ?? candidate.default_effort;
-  if (!want) return { clamped: false };
-  if (supported.includes(want)) return { effort: want, clamped: false };
-  const wi = EFFORT_ORDER.indexOf(want);
-  const lower = supported.filter((e) => EFFORT_ORDER.indexOf(e) < wi);
-  return { effort: lower.length > 0 ? (lower[lower.length - 1] as Effort) : (supported[0] as Effort), clamped: true };
-}
-
 const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
 function baseContext(request: NormalizedRequest, stage: StageScore, failuresNow: number): ExprContext {
@@ -177,6 +164,8 @@ interface FinishOptions {
   readonly keepCurrent?: boolean;
   /** Context the `at_most` caps are evaluated against; the deterministic context unless the judge answered. */
   readonly capContext?: ExprContext;
+  /** Estimate that blocked a switch; otherwise finish computes one for any model switch. */
+  readonly cache?: SwitchCostEstimate;
 }
 
 interface Cap {
@@ -231,6 +220,36 @@ export function plan(input: PlanInput): PlanOutcome {
   const holdActive = session.holdUntilTurn !== undefined && session.turn < session.holdUntilTurn;
   const ctx = baseContext(request, stage, failuresNow);
 
+  /** Cache-aware estimate for moving off the current model, when the switch is on and the last cache reads are known. */
+  const switchEstimate = (targetId: string): SwitchCostEstimate | undefined =>
+    current && def.switch.cache_penalty && targetId !== current.candidate
+      ? estimateSwitch({
+          lastUsage: session.lastUsage,
+          from: policy.candidates[current.candidate] as Candidate,
+          to: policy.candidates[targetId] as Candidate,
+          estimatedInputTokens: request.estimatedInputTokens,
+          estOutputTokens: def.est_output_tokens,
+          horizonTurns: def.recent_turn_window,
+        })
+      : undefined;
+
+  /**
+   * Effort first, model second: when an escalation would move above the baseline, the next effort level on the
+   * baseline instead, or undefined when the switch is off, the move is not upward, or effort is already at the top.
+   */
+  const effortFirst = (targetId: string): Effort | undefined => {
+    if (!def.switch.prefer_effort_over_model || tiers.idx(targetId) <= tiers.idx(baseline)) return undefined;
+    const inUse = current?.effort ?? request.requestedEffort;
+    return effortStepUp(policy.candidates[baseline] as Candidate, inUse);
+  };
+
+  /** The estimate when moving down to `targetId` would cost more in lost cache than it saves over the horizon. */
+  const cacheBlock = (targetId: string): SwitchCostEstimate | undefined => {
+    if (!current || tiers.idx(targetId) >= tiers.idx(current.candidate)) return undefined;
+    const estimate = switchEstimate(targetId);
+    return estimate && estimate.savingUsd < estimate.penaltyUsd ? estimate : undefined;
+  };
+
   const finish = (wantedId: string, source: DecisionSource, o: FinishOptions): Concluded => {
     // Caps come last and bound every path, overrides and holds included: never above the cap this turn.
     const capped = capFor(def, tiers, o.capContext ?? ctx);
@@ -239,6 +258,7 @@ export function plan(input: PlanInput): PlanOutcome {
     const capReasons = lowered ? [...capped.reasons.filter((r) => !o.reasons.includes(r)), "capped"] : [];
     const candidate = policy.candidates[candidateId] as Candidate;
     const { effort, clamped } = resolveEffort(candidate, o.effortWanted);
+    const cache = o.cache ?? switchEstimate(candidateId);
     const decision: Decision = {
       candidate: candidateId,
       model: candidate.model,
@@ -249,6 +269,7 @@ export function plan(input: PlanInput): PlanOutcome {
       reasons: [...baseReasons, ...o.reasons, ...capReasons, ...(clamped ? ["effort_clamped"] : [])],
       counterfactuals: counterfactualCosts(policy.candidates, def.order, request.estimatedInputTokens, def.est_output_tokens),
       lease: o.lease,
+      ...(cache ? { cache } : {}),
     };
     const assignment: CurrentAssignment =
       o.keepCurrent && current && !lowered
@@ -326,8 +347,13 @@ export function plan(input: PlanInput): PlanOutcome {
   if (!request.isNewUserTurn && !stage.abstained && stage.direction !== "none" && stage.confidence >= def.confidence_threshold) {
     const wanted = current?.effort ?? request.requestedEffort;
     const effortOpt = wanted ? { effortWanted: wanted } : {};
-    if (stage.direction === "capable")
-      return decide(tiers.up(baseline), "signals", { reasons: ["signals_capable"], lease: "one_call", ...effortOpt });
+    if (stage.direction === "capable") {
+      const up = tiers.up(baseline);
+      const stepped = effortFirst(up);
+      if (stepped)
+        return decide(baseline, "signals", { reasons: ["signals_capable", "effort_first"], lease: "one_call", effortWanted: stepped });
+      return decide(up, "signals", { reasons: ["signals_capable"], lease: "one_call", ...effortOpt });
+    }
     if (!holdActive) return decide(tiers.down(baseline), "signals", { reasons: ["signals_efficient"], lease: "tool_chain", ...effortOpt });
   }
 
@@ -365,6 +391,7 @@ export function plan(input: PlanInput): PlanOutcome {
     let allowDown = false;
     let effortWanted: Effort | undefined;
     let holdTurns: number | undefined;
+    let pinned = false;
     const reasons: string[] = [];
     for (const [i, rule] of def.rules.entries()) {
       const a = rule.then;
@@ -374,12 +401,15 @@ export function plan(input: PlanInput): PlanOutcome {
       if (a.hold_turns !== undefined) holdTurns = a.hold_turns;
       if (a.pin) {
         target = tiers.clamp(a.pin);
+        pinned = true;
         break;
       }
       if (a.at_least) target = tiers.higher(target, tiers.clamp(a.at_least));
       if (a.up) upSteps += a.up;
       if (a.allow_down) allowDown = true;
     }
+    // Only an `up` action may be absorbed by effort-first; a pin, an at_least, or the default above the baseline switches.
+    const forced = target;
     if (upSteps > 0) target = tiers.higher(target, tiers.up(baseline, upSteps));
     if (tiers.idx(target) < tiers.idx(baseline) && !request.isNewUserTurn && !allowDown) {
       target = baseline;
@@ -387,18 +417,18 @@ export function plan(input: PlanInput): PlanOutcome {
     }
     if (holdActive && current) target = tiers.higher(target, current.candidate);
 
-    // Prefer raising effort over switching model when the policy asks for it and the current model has headroom.
-    if (def.switch.prefer_effort_over_model && current && tiers.idx(target) === tiers.idx(current.candidate) + 1) {
-      const supported = sortedEfforts(policy.candidates[current.candidate] as Candidate);
-      const currentIdx = current.effort ? supported.indexOf(current.effort) : -1;
-      if (supported.length > 0 && currentIdx < supported.length - 1) {
-        const currentRank = EFFORT_ORDER.indexOf(current.effort ?? "minimal");
-        const wantedIsHigher =
-          effortWanted !== undefined && supported.includes(effortWanted) && EFFORT_ORDER.indexOf(effortWanted) > currentRank;
-        effortWanted = wantedIsHigher ? effortWanted : (supported[supported.length - 1] as Effort);
-        target = current.candidate;
-        reasons.push("effort_over_model");
-      }
+    const stepped = !pinned && tiers.idx(forced) <= tiers.idx(baseline) ? effortFirst(target) : undefined;
+    if (stepped) {
+      target = baseline;
+      effortWanted = higherEffort(stepped, effortWanted);
+      reasons.push("effort_first");
+    }
+
+    const blocked = cacheBlock(target);
+    if (blocked && current) {
+      target = current.candidate;
+      effortWanted = current.effort ?? effortWanted;
+      reasons.push("cache_penalty_blocked");
     }
 
     const finalEffort = effortWanted ?? request.requestedEffort;
@@ -409,6 +439,7 @@ export function plan(input: PlanInput): PlanOutcome {
       confidence,
       ...(finalEffort ? { effortWanted: finalEffort } : {}),
       ...(holdTurns !== undefined ? { hold: session.turn + 1 + holdTurns } : {}),
+      ...(blocked ? { cache: blocked } : {}),
     });
   };
 

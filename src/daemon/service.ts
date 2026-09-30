@@ -1,7 +1,7 @@
 import { type Concluded, plan } from "../core/decide";
 import type { Policy } from "../core/policy/types";
 import { type ApplyOutcome, buildDecisionRecord, type DecisionRecord, type JudgeTrace, type TokenUsage } from "../core/record";
-import { emptySession } from "../core/session";
+import { emptySession, withUsage } from "../core/session";
 import { type StageScore, scoreStage } from "../core/signals/stage";
 import type { Decision, Harness, NormalizedRequest, PlanUtilization, RequestClass, ToolOutcome, WireDialect } from "../core/types";
 import type { Judge } from "../judge/types";
@@ -130,7 +130,8 @@ export class RouterService {
       stage,
       commit: (apply, usage, shadow) => {
         if (apply.ok) {
-          store.set(input.sessionKey, concluded.session);
+          // Core decides from numbers only; the daemon supplies what the upstream reported for this call.
+          store.set(input.sessionKey, withUsage(concluded.session, usage));
           store.clearPending(input.sessionKey, pending);
         }
         const record = buildDecisionRecord({

@@ -137,7 +137,7 @@
       ],
       "switch": {
         "cache_penalty": true,
-        "prefer_effort_over_model": false
+        "prefer_effort_over_model": true
       }
     }
   }

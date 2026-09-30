@@ -5,10 +5,11 @@ import type { DecisionRecord } from "../core/record";
 import type { Harness, RequestClass, ToolOutcome } from "../core/types";
 import type { FetchLike } from "../judge/http";
 import type { Judge } from "../judge/types";
+import { corsResponseHeaders, isPreflight, preflightHeaders } from "./cors";
 import { DIALECTS } from "./dialects";
 import { asEffort, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
 import { claudeCodeHookToObserve, codexHookToObserve } from "./hooks";
-import { errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
+import { declaresJson, errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
 import { PlanWindowStore } from "./plan-window";
 import { proxy, relay } from "./relay";
 import { RouterService } from "./service";
@@ -57,7 +58,7 @@ export interface RunningDaemon {
 }
 
 const DEFAULT_MAX_BODY = 64 * 1024 * 1024;
-const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "hermes", "unknown"]);
+const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "cursor", "hermes", "unknown"]);
 const OBSERVE_KINDS: ReadonlySet<string> = new Set(["tool_result", "compaction", "api_error", "subagent_start", "prompt"]);
 
 function dialectForPath(path: string): DialectAdapter | undefined {
@@ -198,6 +199,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     const method = req.method ?? "GET";
     const headers = flattenHeaders(req);
 
+    if (opts.token) {
+      if (isPreflight(method, headers)) {
+        res.writeHead(204, preflightHeaders(headers));
+        res.end();
+        return;
+      }
+      for (const [k, v] of Object.entries(corsResponseHeaders(headers))) res.setHeader(k, v);
+    }
+
     const isProbe = method === "HEAD" && path === "/api/hello";
     if (opts.token && path !== "/healthz" && !isProbe && !presentsToken(headers, opts.token)) {
       sendJson(res, 401, errorBody(dialectForPath(path)?.dialect, 401, "jev-router: missing or invalid token"));
@@ -235,6 +245,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     }
 
     if (method === "POST") {
+      if (!declaresJson(headers)) {
+        const dialect = dialectForPath(path)?.dialect ?? (path === "/v1/messages/count_tokens" ? "anthropic" : undefined);
+        sendJson(res, 415, errorBody(dialect, 415, "jev-router: POST bodies must be sent as content-type application/json"));
+        return;
+      }
       // Client-disconnect detection. Node emits close on the response when the client goes away mid-stream,
       // with the response unfinished. The request's own close event is not usable: it fires when the body ends.
       // Bun's node:http currently emits nothing on a mid-stream abort, so cancellation does not propagate there.

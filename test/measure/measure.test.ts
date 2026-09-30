@@ -146,4 +146,31 @@ describe("replay", () => {
     expect(out.results[0]!.replayed.source).toBe("fallback");
     expect(out.unjudged).toBe(1);
   });
+
+  test("recorded usage feeds cache-aware switching on the next replayed turn", () => {
+    const score = (s: number) => ({ type: "score" as const, score: s, probabilities: {}, confidence: 0.9 });
+    const noul = (p: number) => ({ type: "noul" as const, noul: p });
+    const task = (difficulty: number, stakes: number) => ({
+      difficulty: score(difficulty),
+      needs_reasoning: noul(0.9),
+      stakes: score(stakes),
+      output_kind: { type: "choice" as const, choice: "code_edit", probabilities: {}, confidence: 0.9 },
+      long_context: noul(0.1),
+    });
+    const hard = task(3.4, 2.5);
+    const easy = task(0.5, 0.5);
+    const recorded = [
+      rec({ candidate: "frontier", inTok: 8000, outTok: 500, turn: 0, judge: { questions: Object.keys(hard), answers: hard } }),
+      rec({ candidate: "frontier", inTok: 8000, outTok: 500, turn: 1, judge: { questions: Object.keys(easy), answers: easy } }),
+    ];
+    const withCache = { ...recorded[0]!, usage: { inputTokens: 8000, outputTokens: 500, cacheReadTokens: 100_000 } };
+    const close = minimalPolicy();
+    close.candidates.mid.price = { in: 8, out: 30 };
+    close.policies.default.default = "mid";
+    const p = loadPolicy(close);
+    expect(replay(recorded, p, "default").results[1]!.replayed.candidate).toBe("mid");
+    const out = replay([withCache, recorded[1]!], p, "default");
+    expect(out.results[1]!.replayed.candidate).toBe("frontier");
+    expect(out.results[1]!.replayed.reasons).toContain("cache_penalty_blocked");
+  });
 });

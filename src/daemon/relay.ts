@@ -5,6 +5,8 @@ import type { TokenUsage } from "../core/record";
 import { resolveSessionKey } from "../core/session";
 import type { Harness } from "../core/types";
 import type { FetchLike } from "../judge/http";
+import { cursorUpstreamPath, isResponsesShaped } from "./cursor";
+import { DIALECTS } from "./dialects";
 import { type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
 import {
   copyResponseHeaders,
@@ -79,6 +81,18 @@ function egressFor(policy: Policy, candidate: Candidate | undefined): { readonly
   return defaultEgress(policy);
 }
 
+type Target = { readonly name: string; readonly egress: EgressInput };
+
+/** The request as it should leave for `target`: only Cursor traffic has its path adjusted. */
+function forTarget(r: RelayRequest, harness: Harness, target: Target): RelayRequest {
+  return harness === "cursor" ? { ...r, path: cursorUpstreamPath(target.egress.base_url, r.path) } : r;
+}
+
+/** How to read and rewrite the body: by its shape when a Responses body arrives on the chat path (Cursor does this). */
+function bodyDialect(r: RelayRequest, body: JsonObject): DialectAdapter {
+  return r.dialect.dialect === "openai-chat" && isResponsesShaped(body) ? DIALECTS["openai-responses"] : r.dialect;
+}
+
 export interface RelayRequest {
   /** Token counting must never route, log, or advance a session; it only needs a real model id. */
   readonly countTokens?: boolean;
@@ -109,7 +123,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
   }
 
   const harness = detectHarness(r.headers);
-  const normalized = r.dialect.normalize(body);
+  const shape = bodyDialect(r, body);
+  const normalized = shape.normalize(body);
   const route = findRoute(policy, normalized.requestedModel, harness);
 
   // Unknown model ids pass straight through to the default egress with credentials swapped and nothing rewritten.
@@ -120,7 +135,7 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
       sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, "no egress configured for passthrough"));
       return;
     }
-    await forward(deps, r, target, body, { source: "passthrough" });
+    await forward(deps, forTarget(r, harness, target), target, body, { source: "passthrough" });
     return;
   }
 
@@ -155,7 +170,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     ...(requestClass ? { requestClass } : {}),
     ...(r.headers["x-claude-code-context-compacted"] ? { contextCompacted: true } : {}),
     estimatedInputTokens: Math.ceil(r.rawBody.length / CHARS_PER_TOKEN),
-    dialect: r.dialect.dialect,
+    // The body's own shape, which is what the upstream must read (Cursor sends Responses bodies on the chat path).
+    dialect: shape.dialect,
   });
   const servedId = deps.shadow && policy.candidates[deps.shadow] ? deps.shadow : decided.decision.candidate;
   const candidate = policy.candidates[servedId];
@@ -167,8 +183,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     return;
   }
   const served = shadow && candidate ? { ...decided.decision, candidate: servedId, model: candidate.model } : decided.decision;
-  const rewritten = r.dialect.rewrite(body, served);
-  await forward(deps, r, target, rewritten, {
+  const rewritten = shape.rewrite(body, served);
+  await forward(deps, forTarget(r, harness, target), target, rewritten, {
     source: shadow ? "shadow" : decided.decision.source,
     requestedModel: normalized.requestedModel,
     extraHeaders: {
