@@ -21,7 +21,8 @@ Bun runs the tests and builds; the published package runs on Node 22 or later an
 | `src/judge` | Judge interface and transports | Same request shape for TypeSafe, Vercel, OpenRouter |
 | `src/daemon` | Relay, dialects, session store, hook ingest | Format-preserving. Rewrite `model` and effort, nothing else |
 | `src/adapters` | Pi extension, OpenCode plugin | Fail open; a broken router must look like an uninstalled one |
-| `src/cli` | `init`, `ping`, `setup`, `up`, `hook`, `stats`, `replay` | Pure planners in `plans.ts`, file I/O in `setup.ts` |
+| `src/runtime` | Key and login detection, policy init, env file, log | Reads plan metadata only; never keeps a credential |
+| `src/cli` | `init`, `ping`, `setup`, `service`, `up`, `hook`, `stats`, `replay` | Pure planners in `plans.ts` and `service.ts`, file I/O and process calls in `setup.ts` and `main.ts` |
 | `src/measure` | stats and replay | Report every baseline, including the unflattering ones |
 
 [DESIGN.md](./DESIGN.md) explains the decisions and their rationale. Read it before proposing a change to routing behavior.

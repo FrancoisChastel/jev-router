@@ -6,8 +6,9 @@ Email francois@chastel.co with a description and, if you can, a reproduction. Pl
 
 ## What the relay does with secrets
 
-- Provider keys are read from environment variables named in the policy. They are never written to the policy, the decision log, or any file the installer creates.
-- The relay binds to `127.0.0.1` by default. Binding anywhere else requires `--token`, which every request must present, because the relay injects your real provider key into upstream calls.
+- Provider keys are read from environment variables named in the policy, else from `~/.jev-router/env`, a file `setup` writes only when you give it a key, with mode 600, so the background service can find it. Keys are never written to the policy, the decision log, or any harness file.
+- Harness logins (Claude Code's claude.ai OAuth, Codex's ChatGPT login) are forwarded unchanged, per request, to the provider that harness already talks to, and only for that harness. The relay never reads, stores, or reuses them. `init` reads the plan type from Claude Code's account record and from the plan claim in Codex's id token to know which models to offer; the token itself is decoded in memory and discarded.
+- The relay binds to `127.0.0.1` by default. Binding anywhere else requires `--token`, which every request must present, because the relay injects your real provider key into upstream calls. A `--token` bind cannot forward harness logins.
 - The judge receives a bounded dossier: the last user ask, a short assistant-intent tail, tool names, and up to three short tool-output excerpts. Never the full conversation, file contents, or system prompt. A redaction hook runs before anything leaves the process.
 - The decision log stores digests, vocabularies, and token counts, not prompt text.
 

@@ -7,7 +7,7 @@
 Route every turn of your coding agent to the cheapest model that can finish it.
 
 <p align="center">
-  <img src="docs/assets/flow.svg" width="880" alt="Requests from Claude Code, Codex, OpenCode, or Pi pass through jev-router, where tool signals, the jev judge, and a policy pick the fast, mid, or frontier tier via OpenRouter or Vercel AI Gateway.">
+  <img src="https://raw.githubusercontent.com/FrancoisChastel/jev-router/main/docs/assets/flow.svg" width="880" alt="Requests from Claude Code, Codex, OpenCode, or Pi pass through jev-router, where tool signals, the jev judge, and a policy pick the fast, mid, or frontier tier via OpenRouter or Vercel AI Gateway.">
 </p>
 
 jev-router sits between Claude Code, Codex, OpenCode, or Pi and your model gateway. It watches how the agent is doing, asks [TypeSafe's jev](https://typesafe.ai) a few typed questions when the situation is unclear, and picks a model and reasoning effort per turn. It logs every decision with what it would have cost on every other model, so you can see whether routing pays before you trust it.
@@ -16,6 +16,12 @@ jev-router sits between Claude Code, Codex, OpenCode, or Pi and your model gatew
 - **Nothing rewritten but the model.** Requests are forwarded in the client's own wire format. Streaming, tools, thinking, and prompt caching pass through untouched.
 - **Fails open.** Judge down, key missing, model not found: the request goes through on the default model and the log says why.
 - **Honest numbers.** `stats` compares against always-cheap and always-frontier alike, including when the router loses.
+
+## Requirements
+
+- Node 22 or later
+- One of the harnesses: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://opencode.ai), or [Pi](https://github.com/earendil-works/pi)
+- A key that can reach jev, for the judge: an [OpenRouter](https://openrouter.ai/keys) key or a [Vercel AI Gateway](https://vercel.com/ai-gateway) key. It also serves inference for harnesses that have no login of their own
 
 ## Quick start
 
@@ -27,6 +33,8 @@ jev-router setup
 `setup` asks once for a judge key (an OpenRouter or Vercel AI Gateway key; jev costs about $0.00003 a decision), finds your Claude Code and Codex logins and any gateway keys, writes `~/.jev-router/policy.json` with live prices, points every installed harness at the relay, installs the relay as a background service (launchd on macOS, systemd on Linux), and checks that it answers. Preview everything with `--dry-run`. `npx @french-castle/jev-router setup` works without a global install.
 
 Then use your harness as usual. Claude Code shows `auto (jev-router)` in `/model` and is set to it; Codex and OpenCode use the `auto` model; Pi runs the extension in-process. The pieces are also available one at a time: `init`, `ping`, `up`, `service`; see `jev-router help`.
+
+To undo it: `jev-router service uninstall` stops and removes the background relay, every harness file `setup` changed has a `.bak` copy next to it, and `~/.jev-router` holds the policy, the decision log, and the judge key file; delete it and the package is gone.
 
 ## What you get
 
