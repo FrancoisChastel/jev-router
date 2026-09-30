@@ -131,7 +131,7 @@ Harness hooks in Claude Code and Codex cannot change the model, reasoning effort
 6. If new user turn, or score ambiguous, or no history: one judge call with the question set in section 6, on a bounded dossier.
 7. Policy rules map answers to a candidate and effort. Confidence gate: below `min_confidence`, keep current tier.
 8. Switch cost: switch only if expected gain beats price delta plus lost prompt cache plus lost thinking continuity. v1 uses thresholds and hold turns. v2 uses expected value with measured `cache_read_input_tokens`. Prefer switching at user-turn boundaries. For Codex, prefer adjusting effort over switching models.
-9. Execute through the relay or hand the decision to the in-process actuator. Fallback chain on 429 and 5xx.
+9. Execute through the relay or hand the decision to the in-process actuator. With a policy's `cascade` on, the relay retries one tier up on 429, 5xx, and (when buffering) empty, refusing, or truncated answers; see docs/policy.md.
 10. Log one JSONL line with raw answers, decision, source, usage, and counterfactual cost per candidate.
 
 ## 6. Judge question set v1
@@ -219,7 +219,7 @@ Rule expressions are a tiny, whitelisted grammar: identifiers, numeric compariso
 - Serve `/v1/messages` (requests arrive as `/v1/messages?beta=true`). Optional `count_tokens`. Reject `HEAD /api/hello` harmlessly.
 - Forward `anthropic-version` and `anthropic-beta` verbatim. Treat `anthropic-*` headers and body fields as open lists.
 - Never reshape the `system` array. Keep the attribution block first and separate.
-- Never buffer. Forward `ping` events. Preserve event order. End with `message_delta` and `message_stop`.
+- Never buffer (a policy's opt-in cascade buffers under a time cap; see section 13). Forward `ping` events. Preserve event order. End with `message_delta` and `message_stop`.
 - Return `text/event-stream`, integer `retry-after`, pass through `x-should-retry` and `anthropic-ratelimit-unified-*`.
 - Forward error bodies unmodified.
 - `GET /v1/models?limit=1000` within 3 s, no redirects. Only ids containing `claude` or `anthropic` are shown.
@@ -318,6 +318,7 @@ Deviations from the plan worth knowing:
 | Same-session concurrency | Last writer wins in the in-memory store | Rare in practice (retries, duplicate sends); documented rather than serialized, since a stream can take minutes |
 | Plan-backed inference | The harness's own login is forwarded unchanged; `init` reads only the plan type; tiers come from the plan's models | A Claude Max or ChatGPT user already pays for the models; routing among them stretches the allowance without a second bill. The relay never holds a token, which also keeps it out of the harness's auth flow. Only the harness that owns the login uses it (Claude Code to Anthropic, Codex to OpenAI), never another harness or the judge. |
 | Install as one command | `setup` asks for the judge key once, stores it in a 600 file, detects logins and installed harnesses, configures them, and installs a launchd or systemd user service | Nothing to remember, no terminal to keep open, and every step is individually available (`init`, `up`, `service`) for people who want to see it. `--dry-run` shows every file first. |
+| Cascade within a turn | Opt-in per policy: when a routed answer from below the top tier is an upstream error, empty, a short refusal, or truncated (per `on`), re-run the same request one tier up before the client sees anything; buffer under byte and time caps, flush unchanged when a cap is hit, stop at `max_retries` or `budget_usd`, and charge every attempt | FrugalGPT-style cascades buy frontier quality at cheap-tier cost because the expensive model is paid only when the cheap one visibly fails, and those failures are cheap to detect from the response alone. The relay is the one place that can retry without the harness noticing. Buffering breaks the "never buffer" rule for Claude Code, so it is off by default, capped, and `buffer: false` keeps a latency-free cascade for upstream errors. The client always gets exactly one upstream response, never a merge, so format preservation holds. Stats price baselines on the served answer only, so a cascade that wastes money shows up as lost savings. |
 | Default rule thresholds | Escalate on evidence: `difficulty >= 2.5 and needs_reasoning > 0.8`, `spinning > 0.7 or (tools_failed > 0.7 and spinning > 0.5)` | First Terminal-Bench run (12 easy/medium tasks, Pi): the 0.1.0 thresholds escalated a quarter of the tasks on first-turn guesses or a single failed call, gained nothing in success, and cost 180x more per solved task. Replay predicted and a live re-run confirmed the tuned rules match the fast tier. In-sample; hard tasks still to run. See docs/evaluation.md. |
 
 ## 14. Open questions and risks

@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Cascade within a turn, off by default: `policies.<id>.cascade` retries a routed request one tier up the policy's `order` when the answer is an upstream error (429, 5xx, 529, error event), empty, a short refusal, or truncated, before the client sees anything. Options `on`, `max_retries`, `buffer`, `buffer_max_bytes`, `buffer_max_ms`, `budget_usd`, all validated at load. A buffer cap flushes the response unchanged and abandons the cascade with a warning on stderr. Passthrough, `count_tokens`, shadow mode, and top-tier requests never cascade.
+- `x-jev-router-cascade` response header (for example `fast->mid (empty)`), and an additive `cascade` field on decision records listing every attempt with its outcome, usage, and cost.
+- `stats` reports cascaded requests, retries, and the cost of attempts the client never saw.
+
+### Changed
+
+- A cascaded record's `usage` is the sum over its attempts, and `stats` and `replay` charge every attempt in the actual cost while pricing single-candidate baselines on the served answer alone. After a cascade the session continues on the tier that served.
+- The relay's forwarding code moved from `src/daemon/relay.ts` to `src/daemon/forward.ts`, split into call and delivery steps; behaviour is unchanged.
+
 ## [0.2.0] - 2026-09-27
 
 ### Added
