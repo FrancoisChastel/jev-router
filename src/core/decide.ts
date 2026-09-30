@@ -1,21 +1,24 @@
 import type { Answer, JudgeRequest } from "../judge/types";
+import { estimateSwitch } from "./cache";
 import { counterfactualCosts } from "./cost";
 import { buildDossier, type DossierOptions } from "./dossier";
+import { effortStepUp, higherEffort, resolveEffort } from "./effort";
 import { getPolicyDef } from "./policy";
 import type { ExprContext, ExprValue } from "./policy/expr";
-import type { Candidate, Policy, PolicyDef } from "./policy/types";
+import type { Candidate, EgressInput, Policy, PolicyDef, RuleAction } from "./policy/types";
 import { executionPhaseQuestions, taskPhaseQuestions } from "./questions";
 import { advanceSession } from "./session";
 import { type StageScore, scoreStage } from "./signals/stage";
-import {
-  type CurrentAssignment,
-  type Decision,
-  type DecisionSource,
-  EFFORT_ORDER,
-  type Effort,
-  type Lease,
-  type NormalizedRequest,
-  type SessionState,
+import type {
+  CurrentAssignment,
+  Decision,
+  DecisionSource,
+  Effort,
+  Lease,
+  NormalizedRequest,
+  SessionState,
+  SwitchCostEstimate,
+  WireDialect,
 } from "./types";
 
 /** A lease never outlives this many turns even without an error or a new user turn. */
@@ -48,6 +51,8 @@ interface Tiers {
   higher(a: string, b: string): string;
   /** Nearest eligible tier at or above `id` in the full order, else the highest eligible. */
   clamp(id: string): string;
+  /** Nearest eligible tier at or below `id` in the full order, else the lowest eligible. Used for caps. */
+  floor(id: string): string;
 }
 
 function makeTiers(fullOrder: readonly string[], eligible: readonly string[]): Tiers {
@@ -64,10 +69,28 @@ function makeTiers(fullOrder: readonly string[], eligible: readonly string[]): T
       const full = fullOrder.indexOf(id);
       return eligible.find((e) => fullOrder.indexOf(e) >= full) ?? (eligible[eligible.length - 1] as string);
     },
+    floor: (id) => {
+      if (eligible.includes(id)) return id;
+      const full = fullOrder.indexOf(id);
+      return [...eligible].reverse().find((e) => fullOrder.indexOf(e) <= full) ?? (eligible[0] as string);
+    },
   };
 }
 
-function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
+/** The egress a candidate is served through: its `via`, else the first egress, as the relay resolves it. */
+function egressOf(policy: Policy, candidate: Candidate): EgressInput | undefined {
+  if (candidate.via && policy.egress[candidate.via]) return policy.egress[candidate.via];
+  const first = Object.keys(policy.egress)[0];
+  return first ? policy.egress[first] : undefined;
+}
+
+/** Whether the candidate's egress accepts the request's wire format. Unknown formats and undeclared egresses pass. */
+export function speaks(policy: Policy, candidate: Candidate, request: NormalizedRequest): boolean {
+  const dialects = request.dialect ? egressOf(policy, candidate)?.dialects : undefined;
+  return !dialects || dialects.includes(request.dialect as WireDialect);
+}
+
+export function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
   const caps = candidate.capabilities;
   if (!caps) return true;
   if (request.hasImages && caps.vision === false) return false;
@@ -76,20 +99,7 @@ function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
   return true;
 }
 
-function sortedEfforts(candidate: Candidate): readonly Effort[] {
-  return [...(candidate.effort ?? [])].sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
-}
-
-function resolveEffort(candidate: Candidate, wanted: Effort | undefined): { effort?: Effort; clamped: boolean } {
-  const supported = sortedEfforts(candidate);
-  if (supported.length === 0) return { clamped: false };
-  const want = wanted ?? candidate.default_effort;
-  if (!want) return { clamped: false };
-  if (supported.includes(want)) return { effort: want, clamped: false };
-  const wi = EFFORT_ORDER.indexOf(want);
-  const lower = supported.filter((e) => EFFORT_ORDER.indexOf(e) < wi);
-  return { effort: lower.length > 0 ? (lower[lower.length - 1] as Effort) : (supported[0] as Effort), clamped: true };
-}
+const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
 function baseContext(request: NormalizedRequest, stage: StageScore, failuresNow: number): ExprContext {
   const dims = stage.abstained ? undefined : stage.dimensions;
@@ -107,10 +117,11 @@ function baseContext(request: NormalizedRequest, stage: StageScore, failuresNow:
   };
   if (request.requestClass) ctx.request_class = request.requestClass;
   if (request.requestedEffort) ctx.requested_effort = request.requestedEffort;
+  // Plan windows stay absent until observed, so rules reading them are unknown and never fire.
+  if (finite(request.planWindow?.fiveHour)) ctx.plan_5h = request.planWindow.fiveHour;
+  if (finite(request.planWindow?.sevenDay)) ctx.plan_7d = request.planWindow.sevenDay;
   return ctx;
 }
-
-const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
 /** Only well-formed values reach rules; anything else stays unknown so rules fail closed. */
 function flattenAnswers(answers: Readonly<Record<string, Answer>>): ExprContext {
@@ -151,7 +162,32 @@ interface FinishOptions {
   readonly hold?: number;
   readonly confidence?: number;
   readonly keepCurrent?: boolean;
+  /** Context the `at_most` caps are evaluated against; the deterministic context unless the judge answered. */
+  readonly capContext?: ExprContext;
+  /** Estimate that blocked a switch; otherwise finish computes one for any model switch. */
+  readonly cache?: SwitchCostEstimate;
 }
+
+interface Cap {
+  readonly cap: string;
+  readonly reasons: readonly string[];
+}
+
+/** The lowest `at_most` cap among the rules that hold in `ctx`. Unknown identifiers never hold, so no cap. */
+function capFor(def: PolicyDef, tiers: Tiers, ctx: ExprContext): Cap | undefined {
+  let cap: string | undefined;
+  const reasons: string[] = [];
+  for (const [i, rule] of def.rules.entries()) {
+    if (!rule.then.at_most || !rule.expr.evaluate(ctx)) continue;
+    const c = tiers.floor(rule.then.at_most);
+    reasons.push(`rule:${i}`);
+    if (cap === undefined || tiers.idx(c) < tiers.idx(cap)) cap = c;
+  }
+  return cap === undefined ? undefined : { cap, reasons };
+}
+
+/** Pure cap rules only bound the outcome; they are reported by the cap, not by the rule loop. */
+const isPureCap = (a: RuleAction): boolean => a.at_most !== undefined && Object.keys(a).length === 1;
 
 /**
  * Plan the routing of one request. Returns a decision immediately when deterministic evidence suffices,
@@ -162,10 +198,13 @@ export function plan(input: PlanInput): PlanOutcome {
   const def: PolicyDef = getPolicyDef(policy, policyId);
   const baseReasons: string[] = [];
 
-  const eligible = def.order.filter((id) => isCapable(policy.candidates[id] as Candidate, request));
-  if (eligible.length < def.order.length) baseReasons.push("capability_filter");
+  const speaking = def.order.filter((id) => speaks(policy, policy.candidates[id] as Candidate, request));
+  if (speaking.length < def.order.length) baseReasons.push("dialect_filter");
+  const eligible = speaking.filter((id) => isCapable(policy.candidates[id] as Candidate, request));
+  if (eligible.length < speaking.length) baseReasons.push("capability_filter");
   if (eligible.length === 0) baseReasons.push("no_eligible_candidate");
-  const tiers = makeTiers(def.order, eligible.length > 0 ? eligible : [def.order[def.order.length - 1] as string]);
+  const lastResort = speaking[speaking.length - 1] ?? (def.order[def.order.length - 1] as string);
+  const tiers = makeTiers(def.order, eligible.length > 0 ? eligible : [lastResort]);
 
   const current: CurrentAssignment | undefined =
     session.current && tiers.ids.includes(session.current.candidate) ? session.current : undefined;
@@ -181,9 +220,45 @@ export function plan(input: PlanInput): PlanOutcome {
   const holdActive = session.holdUntilTurn !== undefined && session.turn < session.holdUntilTurn;
   const ctx = baseContext(request, stage, failuresNow);
 
-  const finish = (candidateId: string, source: DecisionSource, o: FinishOptions): Concluded => {
+  /** Cache-aware estimate for moving off the current model, when the switch is on and the last cache reads are known. */
+  const switchEstimate = (targetId: string): SwitchCostEstimate | undefined =>
+    current && def.switch.cache_penalty && targetId !== current.candidate
+      ? estimateSwitch({
+          lastUsage: session.lastUsage,
+          from: policy.candidates[current.candidate] as Candidate,
+          to: policy.candidates[targetId] as Candidate,
+          estimatedInputTokens: request.estimatedInputTokens,
+          estOutputTokens: def.est_output_tokens,
+          horizonTurns: def.recent_turn_window,
+        })
+      : undefined;
+
+  /**
+   * Effort first, model second: when an escalation would move above the baseline, the next effort level on the
+   * baseline instead, or undefined when the switch is off, the move is not upward, or effort is already at the top.
+   */
+  const effortFirst = (targetId: string): Effort | undefined => {
+    if (!def.switch.prefer_effort_over_model || tiers.idx(targetId) <= tiers.idx(baseline)) return undefined;
+    const inUse = current?.effort ?? request.requestedEffort;
+    return effortStepUp(policy.candidates[baseline] as Candidate, inUse);
+  };
+
+  /** The estimate when moving down to `targetId` would cost more in lost cache than it saves over the horizon. */
+  const cacheBlock = (targetId: string): SwitchCostEstimate | undefined => {
+    if (!current || tiers.idx(targetId) >= tiers.idx(current.candidate)) return undefined;
+    const estimate = switchEstimate(targetId);
+    return estimate && estimate.savingUsd < estimate.penaltyUsd ? estimate : undefined;
+  };
+
+  const finish = (wantedId: string, source: DecisionSource, o: FinishOptions): Concluded => {
+    // Caps come last and bound every path, overrides and holds included: never above the cap this turn.
+    const capped = capFor(def, tiers, o.capContext ?? ctx);
+    const lowered = capped !== undefined && tiers.idx(wantedId) > tiers.idx(capped.cap);
+    const candidateId = lowered ? capped.cap : wantedId;
+    const capReasons = lowered ? [...capped.reasons.filter((r) => !o.reasons.includes(r)), "capped"] : [];
     const candidate = policy.candidates[candidateId] as Candidate;
     const { effort, clamped } = resolveEffort(candidate, o.effortWanted);
+    const cache = o.cache ?? switchEstimate(candidateId);
     const decision: Decision = {
       candidate: candidateId,
       model: candidate.model,
@@ -191,12 +266,14 @@ export function plan(input: PlanInput): PlanOutcome {
       ...(effort ? { effort } : {}),
       source,
       ...(o.confidence !== undefined ? { confidence: o.confidence } : {}),
-      reasons: [...baseReasons, ...o.reasons, ...(clamped ? ["effort_clamped"] : [])],
+      reasons: [...baseReasons, ...o.reasons, ...capReasons, ...(clamped ? ["effort_clamped"] : [])],
       counterfactuals: counterfactualCosts(policy.candidates, def.order, request.estimatedInputTokens, def.est_output_tokens),
       lease: o.lease,
+      ...(cache ? { cache } : {}),
+      ...(capped ? { ceiling: capped.cap } : {}),
     };
     const assignment: CurrentAssignment =
-      o.keepCurrent && current
+      o.keepCurrent && current && !lowered
         ? current
         : { candidate: candidateId, ...(effort ? { effort } : {}), lease: o.lease, sinceTurn: session.turn };
     return {
@@ -271,8 +348,13 @@ export function plan(input: PlanInput): PlanOutcome {
   if (!request.isNewUserTurn && !stage.abstained && stage.direction !== "none" && stage.confidence >= def.confidence_threshold) {
     const wanted = current?.effort ?? request.requestedEffort;
     const effortOpt = wanted ? { effortWanted: wanted } : {};
-    if (stage.direction === "capable")
-      return decide(tiers.up(baseline), "signals", { reasons: ["signals_capable"], lease: "one_call", ...effortOpt });
+    if (stage.direction === "capable") {
+      const up = tiers.up(baseline);
+      const stepped = effortFirst(up);
+      if (stepped)
+        return decide(baseline, "signals", { reasons: ["signals_capable", "effort_first"], lease: "one_call", effortWanted: stepped });
+      return decide(up, "signals", { reasons: ["signals_capable"], lease: "one_call", ...effortOpt });
+    }
     if (!holdActive) return decide(tiers.down(baseline), "signals", { reasons: ["signals_efficient"], lease: "tool_chain", ...effortOpt });
   }
 
@@ -302,7 +384,7 @@ export function plan(input: PlanInput): PlanOutcome {
     const full: ExprContext = { ...ctx, ...flattenAnswers(answers) };
     const confidence = minConfidence(answers, def);
     if (confidence < def.min_confidence) {
-      return finish(baseline, "judge", { reasons: ["low_confidence"], lease: "tool_chain", confidence, ...fallbackOpt });
+      return finish(baseline, "judge", { reasons: ["low_confidence"], lease: "tool_chain", confidence, capContext: full, ...fallbackOpt });
     }
 
     let target = tiers.clamp(def.default);
@@ -310,21 +392,25 @@ export function plan(input: PlanInput): PlanOutcome {
     let allowDown = false;
     let effortWanted: Effort | undefined;
     let holdTurns: number | undefined;
+    let pinned = false;
     const reasons: string[] = [];
     for (const [i, rule] of def.rules.entries()) {
-      if (!rule.expr.evaluate(full)) continue;
-      reasons.push(`rule:${i}`);
       const a = rule.then;
+      if (isPureCap(a) || !rule.expr.evaluate(full)) continue;
+      reasons.push(`rule:${i}`);
       if (a.effort) effortWanted = a.effort;
       if (a.hold_turns !== undefined) holdTurns = a.hold_turns;
       if (a.pin) {
         target = tiers.clamp(a.pin);
+        pinned = true;
         break;
       }
       if (a.at_least) target = tiers.higher(target, tiers.clamp(a.at_least));
       if (a.up) upSteps += a.up;
       if (a.allow_down) allowDown = true;
     }
+    // Only an `up` action may be absorbed by effort-first; a pin, an at_least, or the default above the baseline switches.
+    const forced = target;
     if (upSteps > 0) target = tiers.higher(target, tiers.up(baseline, upSteps));
     if (tiers.idx(target) < tiers.idx(baseline) && !request.isNewUserTurn && !allowDown) {
       target = baseline;
@@ -332,27 +418,29 @@ export function plan(input: PlanInput): PlanOutcome {
     }
     if (holdActive && current) target = tiers.higher(target, current.candidate);
 
-    // Prefer raising effort over switching model when the policy asks for it and the current model has headroom.
-    if (def.switch.prefer_effort_over_model && current && tiers.idx(target) === tiers.idx(current.candidate) + 1) {
-      const supported = sortedEfforts(policy.candidates[current.candidate] as Candidate);
-      const currentIdx = current.effort ? supported.indexOf(current.effort) : -1;
-      if (supported.length > 0 && currentIdx < supported.length - 1) {
-        const currentRank = EFFORT_ORDER.indexOf(current.effort ?? "minimal");
-        const wantedIsHigher =
-          effortWanted !== undefined && supported.includes(effortWanted) && EFFORT_ORDER.indexOf(effortWanted) > currentRank;
-        effortWanted = wantedIsHigher ? effortWanted : (supported[supported.length - 1] as Effort);
-        target = current.candidate;
-        reasons.push("effort_over_model");
-      }
+    const stepped = !pinned && tiers.idx(forced) <= tiers.idx(baseline) ? effortFirst(target) : undefined;
+    if (stepped) {
+      target = baseline;
+      effortWanted = higherEffort(stepped, effortWanted);
+      reasons.push("effort_first");
+    }
+
+    const blocked = cacheBlock(target);
+    if (blocked && current) {
+      target = current.candidate;
+      effortWanted = current.effort ?? effortWanted;
+      reasons.push("cache_penalty_blocked");
     }
 
     const finalEffort = effortWanted ?? request.requestedEffort;
     return finish(target, "judge", {
       reasons,
+      capContext: full,
       lease: "tool_chain",
       confidence,
       ...(finalEffort ? { effortWanted: finalEffort } : {}),
       ...(holdTurns !== undefined ? { hold: session.turn + 1 + holdTurns } : {}),
+      ...(blocked ? { cache: blocked } : {}),
     });
   };
 

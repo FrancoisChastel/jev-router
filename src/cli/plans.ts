@@ -119,9 +119,18 @@ export function mergeHooks(existing: unknown, events: readonly string[], makeEnt
   return hooks;
 }
 
-/** Claude Code: ~/.claude/settings.json gets the gateway env block and http hooks. Existing keys are preserved. */
+/** The statusLine command setup installs: the same CLI the hooks run, pointed at the same relay. */
+export function claudeCodeStatusLine(target: SetupTarget): JsonObject {
+  return { type: "command", command: `${target.hookCommand} statusline --url ${target.baseUrl}` };
+}
+
+/**
+ * Claude Code: ~/.claude/settings.json gets the gateway env block, http hooks, and a statusLine when it has none.
+ * Existing keys are preserved; a user's own statusLine is never replaced.
+ */
 export function planClaudeCodeSettings(existing: unknown, target: SetupTarget): JsonObject {
   const settings: JsonObject = isObject(existing) ? { ...existing } : {};
+  if (settings.statusLine === undefined) settings.statusLine = claudeCodeStatusLine(target);
   const env: JsonObject = isObject(settings.env) ? { ...settings.env } : {};
   if (target.auth?.claudeCode === "subscription") {
     // Claude Code must keep using its own login: a relay credential in ANTHROPIC_AUTH_TOKEN would replace it.

@@ -83,9 +83,21 @@ export function geminiPolicyParts(
 ): GeminiPolicyParts {
   const login = auth === "google-login";
   const egressName = login ? GEMINI_CODE_ASSIST_EGRESS : GEMINI_API_EGRESS;
+  // `dialects` keeps every other harness's traffic off these egresses: each upstream speaks only its own format.
   const egress: EgressInput = login
-    ? { base_url: "https://cloudcode-pa.googleapis.com", mount: GEMINI_CODE_ASSIST_MOUNT, forward_auth: true, billing: "subscription" }
-    : { base_url: "https://generativelanguage.googleapis.com", api_key_env: GEMINI_API_KEY_ENV, mount: GEMINI_API_MOUNT };
+    ? {
+        base_url: "https://cloudcode-pa.googleapis.com",
+        mount: GEMINI_CODE_ASSIST_MOUNT,
+        forward_auth: true,
+        billing: "subscription",
+        dialects: ["gemini-code-assist"],
+      }
+    : {
+        base_url: "https://generativelanguage.googleapis.com",
+        api_key_env: GEMINI_API_KEY_ENV,
+        mount: GEMINI_API_MOUNT,
+        dialects: ["gemini"],
+      };
   const table = login ? GEMINI_CODE_ASSIST_CANDIDATES : GEMINI_API_CANDIDATES;
   const prefix = login ? "gemini-login" : "gemini";
   const ids = { fast: `${prefix}-lite`, mid: `${prefix}-flash`, frontier: `${prefix}-pro` } as const;

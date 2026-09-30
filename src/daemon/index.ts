@@ -1,3 +1,5 @@
+export type { AssessInput, Assessment } from "./cascade/assess";
+export { assessResponse } from "./cascade/assess";
 export { anthropicDialect, DIALECTS, openaiChatDialect, openaiResponsesDialect } from "./dialects";
 export type { Dialect, DialectAdapter, NormalizedBody } from "./dialects/types";
 export { claudeCodeHookToObserve, codexHookToObserve } from "./hooks";

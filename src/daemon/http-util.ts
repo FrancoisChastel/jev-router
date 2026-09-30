@@ -59,7 +59,19 @@ export function upstreamHeaders(
   return out;
 }
 
-export function copyResponseHeaders(from: Response, to: ServerResponse): void {
+const USAGE_LIKE = /ratelimit|rate-limit|usage|quota|limit|reset|window|plan|credit|primary|secondary/i;
+const NEVER_PRINT = /authorization|cookie|token|key|secret/i;
+
+/** Rate-limit and usage-like response headers, for the JEV_ROUTER_DEBUG_HEADERS diagnostic. Credentials never match. */
+export function usageLikeHeaders(h: globalThis.Headers): readonly (readonly [string, string])[] {
+  const out: [string, string][] = [];
+  h.forEach((value, key) => {
+    if (USAGE_LIKE.test(key) && !NEVER_PRINT.test(key)) out.push([key, value]);
+  });
+  return out.sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+export function copyResponseHeaders(from: { readonly headers: Response["headers"] }, to: ServerResponse): void {
   from.headers.forEach((value, key) => {
     if (!RESPONSE_DROP.has(key.toLowerCase())) to.setHeader(key, value);
   });
@@ -70,6 +82,8 @@ export function detectHarness(h: Headers): Harness {
   if (h["x-claude-code-session-id"] || ua.includes("claude-cli") || ua.includes("claude-code")) return "claude-code";
   if ((h.originator ?? "").toLowerCase().includes("codex") || ua.includes("codex")) return "codex";
   if (h["x-opencode-session"] || ua.includes("opencode")) return "opencode";
+  // Cursor's backend calls a custom OpenAI base URL with `User-Agent: Cursor/1.0` (LiteLLM's Cursor guide, 2026).
+  if (ua.startsWith("cursor/")) return "cursor";
   if (ua.includes("pi-coding-agent") || ua.startsWith("pi/")) return "pi";
   // "GeminiCLI/<version>/<model> (...)", "GeminiCLI-<client>/...", or the VS Code form ending in "proxy_client=geminicli".
   if (ua.includes("geminicli")) return "gemini";
@@ -108,10 +122,23 @@ const GOOGLE_STATUS: Readonly<Record<number, string>> = {
   413: "INVALID_ARGUMENT",
   502: "UNAVAILABLE",
 };
+/**
+ * Whether a request declares a JSON body. Browsers can send a cross-origin POST without a preflight only as
+ * text/plain, form, or multipart, so requiring JSON keeps a web page from spending the keys a loopback relay injects.
+ */
+export function declaresJson(h: Headers): boolean {
+  return (h["content-type"] ?? "").toLowerCase().includes("application/json");
+}
 
 export function errorBody(dialect: Dialect | undefined, status: number, message: string): string {
   const type =
-    status === 400 ? "invalid_request_error" : status === 401 ? "authentication_error" : status === 404 ? "not_found_error" : "api_error";
+    status === 400 || status === 415
+      ? "invalid_request_error"
+      : status === 401
+        ? "authentication_error"
+        : status === 404
+          ? "not_found_error"
+          : "api_error";
   if (dialect === "anthropic") return JSON.stringify({ type: "error", error: { type, message } });
   if (dialect && isGemini(dialect))
     return JSON.stringify({ error: { code: status, message, status: GOOGLE_STATUS[status] ?? "INTERNAL" } });

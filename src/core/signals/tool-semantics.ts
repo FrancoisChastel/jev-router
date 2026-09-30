@@ -38,6 +38,25 @@ const BUILT_IN: Readonly<Record<Exclude<Harness, "unknown" | "hermes">, ToolSema
     plan: ["todowrite", "todoread", "task", "plan"],
     shell: ["bash"],
   },
+  // Names from Cursor agent system prompts published by the community (2025-2026); Cursor does not document its
+  // wire tool names, so anything missing here falls through to the generic word heuristics below.
+  cursor: {
+    observe: [
+      "read_file",
+      "list_dir",
+      "codebase_search",
+      "grep_search",
+      "grep",
+      "file_search",
+      "glob_file_search",
+      "web_search",
+      "fetch_rules",
+      "read_lints",
+    ],
+    mutate: ["edit_file", "search_replace", "write", "delete_file", "reapply", "edit_notebook"],
+    plan: ["todo_write"],
+    shell: ["run_terminal_cmd"],
+  },
   // Gemini CLI 0.62 built-in tools, as declared in its requests.
   gemini: {
     observe: [

@@ -196,6 +196,19 @@ describe("mounted subscription egress", () => {
     expect(records).toHaveLength(0);
   });
 
+  test("a POST under the mount without a JSON content-type is refused before it reaches the upstream", async () => {
+    captured = [];
+    for (const path of ["/backend-api/codex/responses", "/backend-api/codex/other"]) {
+      const res = await fetch(`${daemon.url}${path}`, {
+        method: "POST",
+        headers: { "content-type": "text/plain", authorization: "Bearer chatgpt-login" },
+        body: JSON.stringify({ model: "auto", input: "hi" }),
+      });
+      expect(res.status).toBe(415);
+    }
+    expect(captured).toHaveLength(0);
+  });
+
   test("paths outside any mount are still unknown", async () => {
     const res = await fetch(`${daemon.url}/backend-api/other`, { headers: { authorization: "Bearer x" } });
     expect(res.status).toBe(404);

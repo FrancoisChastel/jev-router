@@ -1,6 +1,7 @@
 import { knownIdentifiers } from "../context-keys";
 import { SINGLE_AXIS_CONFIDENCE } from "../signals/stage";
-import { EFFORT_ORDER, type Effort, type Harness } from "../types";
+import { EFFORT_ORDER, type Effort, type Harness, WIRE_DIALECTS } from "../types";
+import { validateCascade } from "./cascade";
 import { type CompiledExpr, compileExpr, ExprError } from "./expr";
 import type {
   Candidate,
@@ -15,6 +16,7 @@ import type {
   RuleAction,
 } from "./types";
 
+export { CASCADE_TRIGGERS } from "./cascade";
 export type { CompiledExpr, ExprContext, ExprValue } from "./expr";
 export { compileExpr, ExprError, evaluateExpr } from "./expr";
 export type * from "./types";
@@ -34,7 +36,7 @@ const DEFAULTS = {
   est_output_tokens: 600,
   timeout_ms: 1500,
 } as const;
-const ACTION_KEYS: ReadonlySet<string> = new Set(["pin", "at_least", "up", "allow_down", "effort", "hold_turns"]);
+const ACTION_KEYS: ReadonlySet<string> = new Set(["pin", "at_least", "at_most", "up", "allow_down", "effort", "hold_turns"]);
 const TOOL_CLASSES: ReadonlySet<string> = new Set(["observe", "mutate", "plan", "new", "shell", "other"]);
 const TRANSPORTS: ReadonlySet<string> = new Set(["typesafe", "vercel", "openrouter", "mock"]);
 const HARNESSES: ReadonlySet<string> = new Set<Harness | "any">([
@@ -42,6 +44,7 @@ const HARNESSES: ReadonlySet<string> = new Set<Harness | "any">([
   "claude-code",
   "codex",
   "opencode",
+  "cursor",
   "gemini",
   "hermes",
   "unknown",
@@ -103,6 +106,8 @@ function validateAction(action: unknown, where: string, candidates: ReadonlySet<
     fail(`${where}: pin references unknown candidate '${String(action.pin)}'`);
   if (action.at_least !== undefined && !candidates.has(String(action.at_least)))
     fail(`${where}: at_least references unknown candidate '${String(action.at_least)}'`);
+  if (action.at_most !== undefined && !candidates.has(String(action.at_most)))
+    fail(`${where}: at_most references unknown candidate '${String(action.at_most)}'`);
   if (action.up !== undefined && (!Number.isInteger(action.up) || (action.up as number) < 1))
     fail(`${where}: up must be a positive integer`);
   if (action.allow_down !== undefined && typeof action.allow_down !== "boolean") fail(`${where}: allow_down must be boolean`);
@@ -195,6 +200,7 @@ function validatePolicyDef(
     rules,
     switch: { cache_penalty: sw.cache_penalty === true, prefer_effort_over_model: sw.prefer_effort_over_model === true },
     tool_semantics: tool_semantics as PolicyDef["tool_semantics"],
+    cascade: validateCascade(def.cascade, where, fail),
   };
 }
 
@@ -241,10 +247,15 @@ export function loadPolicy(input: PolicyInput | unknown): Policy {
         (e.pi_provider === undefined || typeof e.pi_provider === "string") &&
         (e.forward_auth === undefined || typeof e.forward_auth === "boolean") &&
         (e.mount === undefined || (typeof e.mount === "string" && /^\/[^?#\s]*[^/?#\s]$/.test(e.mount))) &&
-        (e.billing === undefined || e.billing === "usd" || e.billing === "subscription");
+        (e.billing === undefined || e.billing === "usd" || e.billing === "subscription") &&
+        (e.no_auth === undefined || typeof e.no_auth === "boolean") &&
+        (e.dialects === undefined ||
+          (Array.isArray(e.dialects) &&
+            e.dialects.length > 0 &&
+            e.dialects.every((d) => (WIRE_DIALECTS as readonly unknown[]).includes(d))));
       if (!ok)
         fail(
-          `egress '${name}' needs a base_url string; optional api_key_env / pi_provider strings, forward_auth boolean, mount path such as "/backend-api/codex" (no trailing slash), billing "usd" | "subscription"`,
+          `egress '${name}' needs a base_url string; optional api_key_env / pi_provider strings, forward_auth / no_auth booleans, mount path such as "/backend-api/codex" (no trailing slash), billing "usd" | "subscription", dialects a non-empty list of ${WIRE_DIALECTS.join(", ")}`,
         );
       egress[name] = e as unknown as EgressInput;
     }

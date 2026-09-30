@@ -40,8 +40,21 @@ Named upstreams the relay forwards to. Both OpenRouter and Vercel serve the Anth
 | `mount` | Relay path prefix served by this egress, for example `/backend-api/codex`. An inference sub-path (`/responses`, `/chat/completions`, `/messages`, Gemini's `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`, Code Assist's `/v1internal:generateContent` / `:streamGenerateContent`) is routed; anything else under it is proxied unchanged, credentials aside. A proxied Codex catalog gains an `auto` entry |
 | `billing` | `usd` (default) or `subscription`. The latter marks prices as API list-price equivalents, the scale a plan's allowance is consumed on; `stats` says so |
 | `pi_provider` | Pi provider name when it differs from the egress name |
+| `no_auth` | Send no credentials at all, and strip the caller's. For a local server such as Ollama |
+| `dialects` | Wire formats the upstream accepts, among `anthropic`, `openai-chat`, `openai-responses`, `gemini`, `gemini-code-assist`. Default: all. Candidates behind this egress are filtered out for requests in any other format, the way capabilities filter them |
 
-`init` writes `anthropic-subscription` (`https://api.anthropic.com`, forward_auth) when Claude Code is logged in and `chatgpt-subscription` (`https://chatgpt.com/backend-api/codex`, mounted, forward_auth) when Codex is. For Gemini CLI it writes `gemini-code-assist` (`https://cloudcode-pa.googleapis.com`, mounted at `/code-assist`, forward_auth) when Gemini CLI is logged in with Google, else `google` (`https://generativelanguage.googleapis.com`, mounted at `/gemini`, `GEMINI_API_KEY`) when that key is set. No gateway serves the Gemini dialects, so an unrouted Gemini request goes to the egress the Gemini route uses rather than the default egress.
+`init` writes `anthropic-subscription` (`https://api.anthropic.com`, forward_auth) when Claude Code is logged in, `chatgpt-subscription` (`https://chatgpt.com/backend-api/codex`, mounted, forward_auth) when Codex is, and `ollama` (`http://127.0.0.1:11434`, no_auth, `dialects: ["openai-chat"]`) when a local Ollama server answers. For Gemini CLI it writes `gemini-code-assist` (`https://cloudcode-pa.googleapis.com`, mounted at `/code-assist`, forward_auth, `dialects: ["gemini-code-assist"]`) when Gemini CLI is logged in with Google, else `google` (`https://generativelanguage.googleapis.com`, mounted at `/gemini`, `GEMINI_API_KEY`, `dialects: ["gemini"]`) when that key is set. An unrouted request goes to the egress it arrived under, else its harness's route egress, else the first egress whose `dialects` accept its wire format, so a Gemini request reaches Google and nothing else lands there.
+
+### Plan windows
+
+A `subscription` egress reports how full the plan's usage windows are on every response, and the relay keeps the latest values in memory (never on disk). Observed live:
+
+| Upstream | Headers | Format |
+|---|---|---|
+| Anthropic (Claude Code login) | `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-7d-utilization`, `anthropic-ratelimit-unified-5h-reset` | Fraction `0.65`; reset in Unix seconds |
+| ChatGPT Codex backend | `x-codex-primary-used-percent`, `x-codex-secondary-used-percent`, `x-codex-{primary,secondary}-window-minutes` (300, 10080), `x-codex-primary-reset-at` | Percent `43`; reset in Unix seconds |
+
+Both are normalized to 0..1 and exposed to rules as `plan_5h` and `plan_7d` for the egress the session bills (its current candidate's, else the policy default's). Until a response has reported them they are absent, so rules that read them never fire; the five-hour value is withdrawn again once its reset time passes. `GET /status` on the relay shows the latest window per egress. `JEV_ROUTER_DEBUG_HEADERS=1` prints every rate-limit or usage-like response header name and value to stderr (credentials never match).
 
 ## candidates
 
@@ -58,7 +71,7 @@ Named upstreams the relay forwards to. Both OpenRouter and Vercel serve the Anth
 
 ## routes
 
-Client-visible model ids. `auto` is the generic route, and any `<prefix>/auto` maps onto it. `harness` restricts a route to one harness (`claude-code`, `codex`, `opencode`, `gemini`, `pi`) or `any`. Gemini CLI uses `jev-router/auto`, because it resolves a plain `auto` itself. A route id of `*` catches everything else; without it, unknown model ids pass straight through to the default egress with nothing rewritten.
+Client-visible model ids. `auto` is the generic route, and any `<prefix>/auto` maps onto it. `harness` restricts a route to one harness (`claude-code`, `codex`, `opencode`, `cursor`, `gemini`, `pi`) or `any`. Gemini CLI uses `jev-router/auto`, because it resolves a plain `auto` itself. A route id of `*` catches everything else; without it, unknown model ids pass straight through with nothing rewritten, to the egress chosen as described under [egress](#egress).
 
 ## policies
 
@@ -71,15 +84,55 @@ Client-visible model ids. `auto` is the generic route, and any `<prefix>/auto` m
 | `confidence_threshold` | 0.5 | Ambiguous band for the deterministic tool-signal score. Must be at least 0.462, the value one axis alone can reach |
 | `recent_turn_window` | 3 | Tool-outcome batches considered by the scorer |
 | `est_output_tokens` | 600 | Used for counterfactual cost estimates at decision time |
-| `switch.cache_penalty` | false | Reserved for expected-value switching |
-| `switch.prefer_effort_over_model` | false | Turn a one-tier escalation into a higher effort on the current model when it has headroom |
+| `switch.cache_penalty` | false | Weigh the prompt cache a model switch drops against what the switch saves; see [switch](#switch) |
+| `switch.prefer_effort_over_model` | false | Raise effort on the current model before escalating to the next one; see [switch](#switch) |
 | `tool_semantics` | built-in per harness | Extra tool names per class: `observe`, `mutate`, `plan`, `new`, `shell` |
+| `cascade` | off | Retry a failed-looking response one tier up within the same turn; see [Cascade](#cascade) |
+
+### Cascade
+
+A cascade re-runs a routed request on the next tier of `order` when the first answer looks like a failed attempt, before the client sees anything. The cheap tier serves most turns; the expensive one is paid only when the cheap one visibly fails.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Turn the cascade on for this policy |
+| `on` | `["upstream_error", "empty"]` | What counts as a failed attempt, checked in the order listed. `upstream_error`: HTTP 429, 5xx, 529 "overloaded", an unreachable upstream, or an error event in the stream. `empty`: no assistant text and no tool call (thinking alone is empty). `refusal`: a reply of at most 400 characters, with no tool call, containing "I can't", "I cannot", "I'm unable", "I won't", or "as an AI", or a refusal the provider flagged (OpenAI `refusal`, Anthropic `stop_reason: refusal`). `truncated`: stop reason `max_tokens`, `length`, or an incomplete Responses status |
+| `max_retries` | 1 | How many further tiers to try. The ladder is `order`, after the capability and egress-dialect filters and never above an `at_most` cap that held for the turn; effort is clamped to each tier as for any decision |
+| `buffer` | `true` | Hold the first attempt's response back until it is complete and assessed. With `false`, answers stream through unassessed and only `upstream_error` can trigger (an `on` list with anything else is rejected); `on` then defaults to `["upstream_error"]` |
+| `buffer_max_bytes` | 262144 | Stop buffering past this many bytes: the bytes so far are sent as received, the rest streams through, and the cascade is abandoned for that request (logged to stderr and in the record) |
+| `buffer_max_ms` | 20000 | Same, measured from the moment the response headers arrive |
+| `budget_usd` | none | Do not start a retry whose estimate (estimated input tokens times the next tier's `price.in`, plus `est_output_tokens` times its `price.out`) would take the request's spend so far above this |
+
+Only routed requests cascade: never passthrough ids, `count_tokens`, shadow mode, or a request already on the most capable eligible tier. The last permitted attempt streams straight through. If it also fails, the client gets that response; if it cannot be reached at all, the client gets the response held from the attempt before it. Nothing is merged: the client receives exactly one upstream response, with only the model id echoed as usual.
+
+```json
+"policies": {
+  "default": {
+    "default": "fast",
+    "order": ["fast", "mid", "frontier"],
+    "rules": [],
+    "cascade": {
+      "enabled": true,
+      "on": ["upstream_error", "empty", "refusal"],
+      "max_retries": 1,
+      "buffer": true,
+      "buffer_max_bytes": 262144,
+      "buffer_max_ms": 15000,
+      "budget_usd": 0.5
+    }
+  }
+}
+```
+
+**Latency.** Buffering means the client sees nothing until the first attempt has finished: a streamed answer arrives all at once instead of token by token, and pings are held back with it. For a short tool call from a fast tier that is a fraction of a second; for a long answer it is the whole generation time, and a retry adds the next tier's time on top. `buffer_max_ms` bounds the wait before the router gives up and streams, which keeps Claude Code and Codex from timing out on a silent connection, and `buffer_max_bytes` lets a long answer through as soon as it is clearly not empty. If time to first token matters more than catching empty or refusing answers, set `buffer: false` and keep the cascade for upstream errors only, which cost no latency because an error arrives before any byte is streamed.
+
+A cascaded request's log record keeps the router's original `decision` and adds `cascade: { attempts, served, abandoned? }`, one entry per upstream call with its outcome, usage, and list-price cost. The record's `usage` is the sum over attempts. The response carries `x-jev-router-cascade`, for example `fast->mid (empty)`, and `x-jev-router-candidate` names the tier that served. The session continues on the tier that served. `stats` charges every attempt in the actual cost, prices the single-candidate baselines on the served answer's tokens alone, and reports what the discarded attempts cost.
 
 ### Rules
 
 Rules are evaluated in order. Expressions use a tiny language: identifiers, numbers, strings, `>=` `<=` `>` `<` `==` `!=`, `in [a, b]`, `and`, `or`, `not`, parentheses. Nothing executes. A missing identifier makes its sub-expression unknown, and unknown never fires a rule, even under `not`.
 
-Identifiers the engine always provides: `harness`, `request_class`, `has_images`, `is_new_user_turn`, `est_tokens`, `consecutive_failures`, `requested_effort`, and the deterministic tool signals `signal.score`, `signal.severity`, `signal.spinning`, `signal.exploring`, `signal.production`.
+Identifiers the engine always provides: `harness`, `request_class`, `has_images`, `is_new_user_turn`, `est_tokens`, `consecutive_failures`, `requested_effort`, and the deterministic tool signals `signal.score`, `signal.severity`, `signal.spinning`, `signal.exploring`, `signal.production`. On plan-billed egresses, once observed: `plan_5h` and `plan_7d`, the five-hour and seven-day window utilization from 0 to 1 (see [Plan windows](#plan-windows)).
 
 Judge answers by question id. Task phase, asked on each new user turn: `difficulty` (score 0 to 3), `needs_reasoning` (probability), `stakes` (score 0 to 3), `output_kind` (choice: `short_answer`, `code_edit`, `long_generation`, `plan`, `tool_plan`), `long_context` (probability). Execution phase, asked when the tool signals are ambiguous: `tools_failed`, `spinning`, `producing` (probabilities). Choice and score answers also expose `<id>.confidence`.
 
@@ -89,6 +142,7 @@ Actions:
 |---|---|
 | `pin` | Final candidate; later rules are skipped |
 | `at_least` | Raise the target to at least this tier |
+| `at_most` | Cap: never serve above this tier this turn. Applied after every other action and on every path, overrides, holds, and leases included; the lowest matching cap wins. A cap on a tier the request cannot use falls to the nearest usable tier below it |
 | `up` | Raise the target this many tiers above the current one |
 | `allow_down` | Permit moving below the current tier on a tool continuation |
 | `effort` | Set the effort, clamped to the candidate's list |
@@ -110,3 +164,42 @@ The default rules:
 These thresholds were calibrated on a Terminal-Bench subset (see [evaluation.md](./evaluation.md#results)): a single failed tool call or a moderately hard-looking task is not enough to leave the fast tier; repeated failure, spinning, or a hard task that also needs careful reasoning is.
 
 Compaction is handled by a built-in override and is not a rule identifier.
+
+Policies `init` generates for a Claude Code or Codex login end with two caps, so the router shifts down as the five-hour window fills and the user does not hit the wall mid-task:
+
+```json
+[
+  { "when": "plan_5h >= 0.8", "then": { "at_most": "claude-sonnet" } },
+  { "when": "plan_5h >= 0.95", "then": { "at_most": "claude-haiku" } }
+]
+```
+
+(`codex-mid` and `codex-fast` for Codex; with only two Codex tiers, just the second rule.)
+
+### A free local tier
+
+When Ollama is running, `init` adds a `local` candidate (the first installed of `qwen3-coder`, `qwen2.5-coder`, `deepseek-coder`, `devstral`, `codestral`, `codellama`, else the first tag; price 0) at the bottom of the `default` policy's `order`, and a first rule `request_class in [auxiliary, compaction]` → `pin: local`. The `ollama` egress speaks OpenAI chat only, so Anthropic-format and Responses requests skip `local` and the pin lands on `fast`. To make it the default tier for chat-format harnesses, set `"default": "local"` in `policies.default`; rules still escalate to the gateway tiers when a turn earns it.
+
+### switch
+
+Two switches decide how a policy moves between models. Both are off in a hand-written policy that leaves them out, and both are on in every policy `init` and `setup` generate (`default`, `claude-code`, `codex`).
+
+**`prefer_effort_over_model`: effort first, model second.** When a decision would move up the ladder because of an `up` action or a decisive tool-signal escalation, the router first raises the reasoning effort on the current candidate by one level and keeps it, with the reason `effort_first`. The level in use is the session's current effort, else the request's effort, else the candidate's `default_effort`, else the middle of its `effort` list. Only when effort is already at the candidate's top level (or it has no `effort` list) does the model switch. A `pin`, an `at_least` (the stakes rules), a `default` above the current tier, and the hard overrides (compaction, repeated failures, critical errors) always switch model. Downward moves are unaffected. Effort is cheaper than a new model and keeps the prompt cache.
+
+**`cache_penalty`: cache-aware switching.** Prompt caches are per model, so a switch re-sends the cached prefix at full price. The daemon keeps the usage the upstream reported for the session's previous response; when it includes cache reads and the decision would move to another model, the router estimates:
+
+- `penaltyUsd`, paid once: the cached prefix re-sent at the new model's full input price, minus the discounted read staying would have paid, never below zero: `cacheRead × (to.in − 0.1 × from.in) / 1M`. The 0.1 is the usual 90% cache-read discount.
+- `savingUsd`, over the horizon: after the first turn the prefix is read at cached rates on either model, so only the new input tokens and the output pay full price: `((from.in − to.in) × (0.1 × cacheRead + max(0, estInput − cacheRead)) + (from.out − to.out) × est_output_tokens) / 1M`, times `recent_turn_window` turns. `estInput` is the request's estimated input tokens.
+
+Worked example, Opus to Sonnet at the plan-backed default prices (Opus $4 in / $20 out, Sonnet $2 / $10 per million), a 40k-token cached prefix, 2k new input tokens (42k in total), `est_output_tokens` 600:
+
+| | Formula | USD |
+|---|---|---|
+| Penalty | 40,000 × (2 − 0.1 × 4) / 1M | 0.064 |
+| Saving per turn | ((4 − 2) × (0.1 × 40,000 + 2,000) + (20 − 10) × 600) / 1M | 0.018 |
+| Saving, `recent_turn_window` 3 | 3 × 0.018 | 0.054: below the penalty, the downgrade is blocked |
+| Saving, `recent_turn_window` 4 | 4 × 0.018 | 0.072: above the penalty, the session moves to Sonnet |
+
+With a 20k cached prefix and the same 2k new tokens, the penalty falls to 0.032 and the three-turn saving is 3 × ((2 × (2,000 + 2,000) + 6,000) / 1M) = 0.042, so the downgrade goes through.
+
+When the rules move a judged turn down to a cheaper model and the saving is below the penalty, the current model is kept, with the reason `cache_penalty_blocked`. Upgrades are never blocked: quality comes first. A `pin` (such as auxiliary requests to the fast tier) is not weighed. Every decision that switches model with known cache reads, and every blocked one, carries both numbers as `decision.cache: { penaltyUsd, savingUsd }` in the log, so the reason can be checked. Without reported usage (first turn, a harness whose responses carry none, or the in-process Pi adapter) nothing changes. `replay` feeds the recorded usage back, so it sees what the live router saw.

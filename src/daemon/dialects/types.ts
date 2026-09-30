@@ -1,6 +1,6 @@
-import type { Decision, Effort, ToolOutcome } from "../../core/types";
+import type { Decision, Effort, ToolOutcome, WireDialect } from "../../core/types";
 
-export type Dialect = "anthropic" | "openai-chat" | "openai-responses" | "gemini" | "gemini-code-assist";
+export type Dialect = WireDialect;
 
 /** What a dialect adapter extracts from a request body, before harness headers and session state are added. */
 export interface NormalizedBody {

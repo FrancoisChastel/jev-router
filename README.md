@@ -48,8 +48,9 @@ To undo it: `jev-router service uninstall` stops and removes the background rela
 | Codex logged in with ChatGPT | one of the keys above | your plan, through Codex's own login: the models your plan lists |
 | `GEMINI_API_KEY` | not used for the judge | Gemini CLI only, on the Gemini API: flash-lite, flash, pro |
 | Gemini CLI logged in with Google | one of the keys above | Gemini CLI only, through its own login to Code Assist: flash-lite, flash, pro |
+| Ollama running locally | unchanged | a free `local` tier for auxiliary and compaction calls in OpenAI chat format |
 
-Logins are never copied or stored. The harness sends its own credentials, the relay forwards them unchanged to Anthropic, OpenAI, or Google and only chooses the model, and `init` reads nothing but the plan type to know which models to offer. Costs for plan-backed models are shown at API list prices, the same scale a plan's allowance is consumed on.
+Logins are never copied or stored. The harness sends its own credentials, the relay forwards them unchanged to Anthropic, OpenAI, or Google and only chooses the model, and `init` reads nothing but the plan type to know which models to offer. Costs for plan-backed models are shown at API list prices, the same scale a plan's allowance is consumed on. As the plan's five-hour window fills (80%, then 95%), the router caps the tier so you do not hit the limit mid-task.
 
 The generated policy has three candidates on models available on both gateways:
 
@@ -68,6 +69,7 @@ Edit `~/.jev-router/policy.json` to change models, prices, or rules. `jev-router
 3. **Tool signals.** Recent tool outcomes are scored the way NVIDIA's Switchyard does it: error severity, spinning, and exploring push toward a capable model, steady production pushes toward a cheap one. A decisive score skips the judge.
 4. **The judge.** On a new user turn, or when the signals are ambiguous, one jev call answers five task questions or three execution questions against a bounded summary. jev never sees the full conversation. It costs about three thousandths of a cent and returns in a few hundred milliseconds.
 5. **Policy.** Plain rules map the answers to a candidate and an effort. Low confidence on a question a rule depends on keeps the current tier.
+6. **Switch cost.** An escalation first raises reasoning effort on the current model and changes model only once effort is maxed out. A downgrade that would drop more prompt cache than it saves over the next few turns is skipped. Stakes rules and hard overrides still switch at once. On a plan, caps on the five-hour window's usage come last and bound every step above.
 
 Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the decision and its reasons, whether it took effect, the tokens the upstream reported, and the cost on every other candidate.
 
@@ -80,8 +82,9 @@ Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the 
 | OpenCode | Local relay as an OpenAI-compatible provider | Plugin tags requests with the session and reports tool results, compaction, API errors |
 | Gemini CLI | Local relay via `GOOGLE_GEMINI_BASE_URL` (API key) or `CODE_ASSIST_ENDPOINT` (Google login), model `jev-router/auto` | Tool results from the request body; with a Google login, hooks report tool results and prompts |
 | Pi | In-process extension, no relay | Everything: prompts, tool results, compaction, model changes |
+| Cursor (Chat and Agent) | A token-guarded relay published by `jev-router expose`, set as Cursor's OpenAI base URL; Tab and the Cursor CLI are not routed | The request body only: its tool results; no hooks |
 
-`jev-router setup` configures whichever of the five are installed, backs up every file it touches, and keeps the relay running as a background service. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
+`jev-router setup` configures whichever of the first five are installed, backs up every file it touches, and keeps the relay running as a background service. Cursor calls the relay from its own servers, so `setup` prints its steps instead of writing files. [docs/harnesses.md](./docs/harnesses.md) has the manual steps, the service commands, and the Claude Code marketplace install.
 
 ## Measure before believing
 
@@ -89,6 +92,7 @@ Every decision is one line in `~/.jev-router/decisions.jsonl`: raw answers, the 
 jev-router stats                       # actual cost versus every single-model baseline
 jev-router replay --policy new.json    # re-decide the same log under another policy, no judge calls
 jev-router up --shadow frontier        # serve one model, log what the router would have done
+jev-router why --last 3                # why the last three turns went where they did
 ```
 
 None of this is a benchmark. [docs/evaluation.md](./docs/evaluation.md) is the runbook for Terminal-Bench through Harbor with each harness against single-model baselines. Until that has been run, treat any savings figure as unproven.

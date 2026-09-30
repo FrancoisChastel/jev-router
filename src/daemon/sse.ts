@@ -6,6 +6,9 @@
 
 import { usageOf } from "./http-util";
 
+/** Re-exported for the cascade, which reads usage from buffered stream events. */
+export { usageOf };
+
 export interface SseTransformOptions {
   readonly requestedModel: string;
   readonly onUsage?: (usage: Record<string, unknown>) => void;

@@ -503,6 +503,66 @@ describe("log callback failures", () => {
   });
 });
 
+describe("JSON content-type on POST", () => {
+  const POST_PATHS = [
+    "/v1/messages",
+    "/v1/chat/completions",
+    "/v1/responses",
+    "/v1/messages/count_tokens",
+    "/observe",
+    "/decide",
+    "/hooks/claude-code",
+    "/hooks/codex",
+  ];
+  const payload = JSON.stringify({ model: "auto", messages: [{ role: "user", content: "hi" }] });
+
+  test("text/plain, a form, or no content-type is refused with 415 and never forwarded", async () => {
+    reset();
+    for (const path of POST_PATHS) {
+      const plain = await fetch(`${daemon.url}${path}`, { method: "POST", headers: { "content-type": "text/plain" }, body: payload });
+      expect(plain.status).toBe(415);
+      const form = await fetch(`${daemon.url}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: payload,
+      });
+      expect(form.status).toBe(415);
+      // A byte body leaves fetch without a content-type header at all.
+      const none = await fetch(`${daemon.url}${path}`, { method: "POST", body: new TextEncoder().encode(payload) });
+      expect(none.status).toBe(415);
+    }
+    expect(captured).toHaveLength(0);
+    expect(records).toHaveLength(0);
+  });
+
+  test("the error body keeps the dialect's shape", async () => {
+    const anthropic = await fetch(`${daemon.url}/v1/messages`, { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" });
+    expect(await anthropic.json()).toMatchObject({ type: "error", error: { type: "invalid_request_error" } });
+    const chat = await fetch(`${daemon.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "{}",
+    });
+    expect(await chat.json()).toMatchObject({ error: { type: "invalid_request_error" } });
+  });
+
+  test("application/json with a charset passes, including an empty count_tokens body", async () => {
+    reset();
+    upstreamMode = "json";
+    const chat = await fetch(`${daemon.url}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: payload,
+    });
+    expect(chat.status).toBe(200);
+    const count = await fetch(`${daemon.url}/v1/messages/count_tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-claude-code-session-id": "ct-empty" },
+    });
+    expect(count.status).toBe(200);
+  });
+});
+
 describe("token gate", () => {
   test("a non-loopback bind without a token is refused, and a token guards every endpoint but health", async () => {
     await expect(startDaemon({ policy: loadPolicy(minimalPolicy()), port: 0, host: "0.0.0.0" })).rejects.toThrow(/token/);

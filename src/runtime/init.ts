@@ -13,6 +13,7 @@ import {
   type KeyDetection,
   parseOpenRouterCatalog,
 } from "./defaults";
+import { detectOllama, type OllamaDetection } from "./ollama";
 import type { Env } from "./paths";
 import { detectSubscriptions, type SubscriptionDetection } from "./subscriptions";
 
@@ -28,6 +29,8 @@ export interface InitOptions {
   readonly home?: string;
   /** Subscriptions to build from, or `false` to ignore harness logins. Detected from `home` when omitted. */
   readonly subscriptions?: SubscriptionDetection | false;
+  /** A local Ollama server to add as the free tier, or `false` to skip it. Probed with `fetch` when omitted. */
+  readonly ollama?: OllamaDetection | false;
   readonly readFile?: (path: string) => Promise<string>;
   readonly log?: (line: string) => void;
 }
@@ -37,6 +40,7 @@ export interface InitResult {
   readonly written: boolean;
   readonly detection: KeyDetection;
   readonly subscriptions?: SubscriptionDetection;
+  readonly ollama?: OllamaDetection;
   readonly pricesFrom: "live catalog" | "built-in table";
   readonly policy: Policy;
 }
@@ -76,10 +80,23 @@ export async function initPolicy(opts: InitOptions): Promise<InitResult> {
       /* offline: curated prices are used */
     }
   }
-  const build = { detection, ...(catalog && catalog.size > 0 ? { catalog } : {}), ...(subscriptions ? { subscriptions } : {}) };
+  const ollama = opts.ollama === false ? undefined : (opts.ollama ?? (fetchImpl ? await detectOllama(fetchImpl) : undefined));
+  const build = {
+    detection,
+    ...(catalog && catalog.size > 0 ? { catalog } : {}),
+    ...(subscriptions ? { subscriptions } : {}),
+    ...(ollama ? { ollama } : {}),
+  };
   const policy = loadPolicy(buildDefaultPolicy(build));
   const pricesFrom: InitResult["pricesFrom"] = catalog && catalog.size > 0 ? "live catalog" : "built-in table";
-  const result = { path: opts.path, detection, ...(subscriptions ? { subscriptions } : {}), pricesFrom, policy };
+  const result = {
+    path: opts.path,
+    detection,
+    ...(subscriptions ? { subscriptions } : {}),
+    ...(ollama ? { ollama } : {}),
+    pricesFrom,
+    policy,
+  };
 
   if ((await exists(opts.path)) && !opts.force) {
     log(`policy: keeping existing ${opts.path} (use --force to regenerate)`);
@@ -91,7 +108,7 @@ export async function initPolicy(opts: InitOptions): Promise<InitResult> {
   return { ...result, written: true };
 }
 
-export function describeDetection(d: KeyDetection, subs?: SubscriptionDetection): string[] {
+export function describeDetection(d: KeyDetection, subs?: SubscriptionDetection, ollama?: OllamaDetection): string[] {
   const lines: string[] = [];
   lines.push(d.found.length > 0 ? `keys    ${d.found.join(", ")}` : "keys    none found");
   lines.push(
@@ -106,5 +123,9 @@ export function describeDetection(d: KeyDetection, subs?: SubscriptionDetection)
   );
   lines.push(...describeSubscriptions(subs));
   if (d.gemini && !subs?.gemini) lines.push(`gemini  GEMINI_API_KEY: Gemini CLI routes ${geminiLadder("api-key")} on the Gemini API`);
+  if (ollama)
+    lines.push(
+      `local   Ollama at ${ollama.baseUrl}: ${ollama.model} is the free 'local' tier for auxiliary and compaction calls in the default policy`,
+    );
   return lines;
 }

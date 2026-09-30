@@ -34,18 +34,19 @@ export const defaultProbe = (home: string): AgentProbe => ({ home, exists: fsExi
 
 /** Harnesses installed on this machine, judged by their config directory or their binary on $PATH. */
 export async function detectAgents(probe: AgentProbe): Promise<Agent[]> {
-  const checks: readonly (readonly [Agent, string[], string])[] = [
-    ["claude-code", [join(probe.home, ".claude")], "claude"],
-    ["codex", [join(probe.home, ".codex")], "codex"],
-    ["opencode", [join(probe.home, ".config", "opencode")], "opencode"],
-    ["gemini", [join(probe.home, ".gemini")], "gemini"],
-    ["pi", [join(probe.home, ".pi")], "pi"],
+  const checks: readonly (readonly [Agent, readonly string[], readonly string[]])[] = [
+    ["claude-code", [join(probe.home, ".claude")], ["claude"]],
+    ["codex", [join(probe.home, ".codex")], ["codex"]],
+    ["opencode", [join(probe.home, ".config", "opencode")], ["opencode"]],
+    ["pi", [join(probe.home, ".pi")], ["pi"]],
+    ["cursor", [join(probe.home, ".cursor")], ["cursor", "cursor-agent"]],
+    ["gemini", [join(probe.home, ".gemini")], ["gemini"]],
   ];
   const found: Agent[] = [];
-  for (const [agent, dirs, binary] of checks) {
+  for (const [agent, dirs, binaries] of checks) {
     let present = false;
-    for (const d of dirs) if (await probe.exists(d)) present = true;
-    if (!present && (await probe.onPath(binary))) present = true;
+    for (const d of dirs) if (!present && (await probe.exists(d))) present = true;
+    for (const b of binaries) if (!present && (await probe.onPath(b))) present = true;
     if (present) found.push(agent);
   }
   return found;

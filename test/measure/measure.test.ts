@@ -57,6 +57,27 @@ describe("stats", () => {
     expect(s.byCandidate.frontier).toBe(1);
   });
 
+  test("a cascade charges every attempt, while baselines price only the answer the client got", () => {
+    const failed = { inputTokens: 1_000_000, outputTokens: 0 };
+    const answer = { inputTokens: 1_000_000, outputTokens: 1_000_000 };
+    const cascaded: DecisionRecord = {
+      ...rec({ candidate: "fast", inTok: 2_000_000, outTok: 1_000_000 }),
+      cascade: {
+        attempts: [
+          { candidate: "fast", model: "openai/gpt-5.4-mini", outcome: "empty", usage: failed, costUsd: 0.15 },
+          { candidate: "mid", model: "anthropic/claude-sonnet-5", outcome: "served", usage: answer, costUsd: 18 },
+        ],
+        served: "mid",
+      },
+    };
+    const s = summarize([cascaded], policy);
+    // fast attempt: 1M in * 0.15 = 0.15 ; mid attempt: 1M in * 3 + 1M out * 15 = 18
+    expect(s.actualCostUsd).toBeCloseTo(18.15, 6);
+    expect(s.baselines.mid!.costUsd).toBeCloseTo(18, 6);
+    expect(s.baselines.fast!.costUsd).toBeCloseTo(0.75, 6);
+    expect(s.cascades).toEqual({ requests: 1, retries: 1, discardedCostUsd: expect.closeTo(0.15, 6) as unknown as number });
+  });
+
   test("records without usage are counted but excluded from cost", () => {
     const withUsage = rec({ candidate: "fast", inTok: 1000, outTok: 100 });
     const { usage: _u, ...without } = rec({ candidate: "mid", inTok: 0, outTok: 0 });
@@ -106,6 +127,26 @@ describe("replay", () => {
     expect(out.replayedCostUsd).toBeLessThan(out.recordedCostUsd);
   });
 
+  test("the recorded plan window is replayed, so plan caps apply to it", () => {
+    const answers = {
+      difficulty: { type: "score" as const, score: 3, probabilities: {}, confidence: 0.9 },
+      needs_reasoning: { type: "noul" as const, noul: 0.9 },
+      stakes: { type: "score" as const, score: 3, probabilities: {}, confidence: 0.9 },
+    };
+    const judged = { judge: { questions: Object.keys(answers), answers } };
+    const capped = minimalPolicy();
+    capped.policies.default.rules.push({ when: "plan_5h >= 0.8", then: { at_most: "mid" } });
+    const out = replay(
+      [
+        rec({ candidate: "frontier", inTok: 100, outTok: 10, session: "a", ...judged }),
+        rec({ candidate: "frontier", inTok: 100, outTok: 10, session: "b", plan: { fiveHour: 0.85 }, ...judged }),
+      ],
+      loadPolicy(capped),
+      "default",
+    );
+    expect(out.results.map((r) => r.replayed.candidate)).toEqual(["frontier", "mid"]);
+  });
+
   test("turns whose judge answers were not recorded fall open in replay and are flagged", () => {
     const recorded = [
       rec({
@@ -125,5 +166,32 @@ describe("replay", () => {
     const out = replay(recorded, policy, "default");
     expect(out.results[0]!.replayed.source).toBe("fallback");
     expect(out.unjudged).toBe(1);
+  });
+
+  test("recorded usage feeds cache-aware switching on the next replayed turn", () => {
+    const score = (s: number) => ({ type: "score" as const, score: s, probabilities: {}, confidence: 0.9 });
+    const noul = (p: number) => ({ type: "noul" as const, noul: p });
+    const task = (difficulty: number, stakes: number) => ({
+      difficulty: score(difficulty),
+      needs_reasoning: noul(0.9),
+      stakes: score(stakes),
+      output_kind: { type: "choice" as const, choice: "code_edit", probabilities: {}, confidence: 0.9 },
+      long_context: noul(0.1),
+    });
+    const hard = task(3.4, 2.5);
+    const easy = task(0.5, 0.5);
+    const recorded = [
+      rec({ candidate: "frontier", inTok: 8000, outTok: 500, turn: 0, judge: { questions: Object.keys(hard), answers: hard } }),
+      rec({ candidate: "frontier", inTok: 8000, outTok: 500, turn: 1, judge: { questions: Object.keys(easy), answers: easy } }),
+    ];
+    const withCache = { ...recorded[0]!, usage: { inputTokens: 8000, outputTokens: 500, cacheReadTokens: 100_000 } };
+    const close = minimalPolicy();
+    close.candidates.mid.price = { in: 8, out: 30 };
+    close.policies.default.default = "mid";
+    const p = loadPolicy(close);
+    expect(replay(recorded, p, "default").results[1]!.replayed.candidate).toBe("mid");
+    const out = replay([withCache, recorded[1]!], p, "default");
+    expect(out.results[1]!.replayed.candidate).toBe("frontier");
+    expect(out.results[1]!.replayed.reasons).toContain("cache_penalty_blocked");
   });
 });

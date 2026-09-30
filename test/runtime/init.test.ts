@@ -55,6 +55,20 @@ describe("default policy", () => {
     expect(p.judge).toMatchObject({ transport: "openrouter", model: "typesafe/jev-1.13", api_key_env: "OPENROUTER_API_KEY" });
   });
 
+  test("every generated policy raises effort before switching model and weighs the prompt cache", () => {
+    const p = loadPolicy(
+      buildDefaultPolicy({
+        detection: detectKeys({ OPENROUTER_API_KEY: "k" }),
+        subscriptions: {
+          anthropic: { plan: "max", tier: "default_claude_max_20x" },
+          chatgpt: { plan: "plus", models: CODEX_BUILT_IN_MODELS, modelsFrom: "built-in" },
+        },
+      }),
+    );
+    expect(Object.keys(p.policies).sort()).toEqual(["claude-code", "codex", "default"]);
+    for (const def of Object.values(p.policies)) expect(def.switch).toEqual({ cache_penalty: true, prefer_effort_over_model: true });
+  });
+
   test("the shipped example policy is exactly the built-in default for an OpenRouter key", async () => {
     const example = JSON.parse(await readFile("examples/policy.json", "utf8"));
     expect(example).toEqual(buildDefaultPolicy({ detection: detectKeys({ OPENROUTER_API_KEY: "k" }) }));
@@ -195,6 +209,7 @@ describe("gemini defaults", () => {
       base_url: "https://generativelanguage.googleapis.com",
       api_key_env: "GEMINI_API_KEY",
       mount: "/gemini",
+      dialects: ["gemini"],
     });
     expect(tierOrder(p, "gemini").map((id) => p.candidates[id]?.model)).toEqual([
       "gemini-3.1-flash-lite",
@@ -219,6 +234,7 @@ describe("gemini defaults", () => {
       mount: "/code-assist",
       forward_auth: true,
       billing: "subscription",
+      dialects: ["gemini-code-assist"],
     });
     expect(tierOrder(p, "gemini").map((id) => p.candidates[id]?.model)).toEqual([
       "gemini-3.1-flash-lite",

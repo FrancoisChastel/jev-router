@@ -5,15 +5,18 @@ import type { DecisionRecord } from "../core/record";
 import type { Harness, RequestClass, ToolOutcome } from "../core/types";
 import type { FetchLike } from "../judge/http";
 import type { Judge } from "../judge/types";
+import { corsResponseHeaders, isPreflight, preflightHeaders } from "./cors";
 import { DIALECTS } from "./dialects";
 import { isGeminiGeneratePath } from "./dialects/gemini";
 import { isCodeAssistGeneratePath } from "./dialects/gemini-code-assist";
 import { asEffort, type Dialect, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
 import { claudeCodeHookToObserve, codexHookToObserve, geminiHookToObserve } from "./hooks";
-import { errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
+import { declaresJson, errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
+import { PlanWindowStore } from "./plan-window";
 import { proxy, relay } from "./relay";
 import { RouterService } from "./service";
 import { type ObserveEvent, SessionStore } from "./session-store";
+import { StatusBoard } from "./status";
 
 export interface DaemonOptions {
   readonly policy: Policy;
@@ -62,7 +65,7 @@ export interface RunningDaemon {
 }
 
 const DEFAULT_MAX_BODY = 64 * 1024 * 1024;
-const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "gemini", "hermes", "unknown"]);
+const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "cursor", "gemini", "hermes", "unknown"]);
 const OBSERVE_KINDS: ReadonlySet<string> = new Set(["tool_result", "compaction", "api_error", "subagent_start", "prompt"]);
 
 function dialectForPath(path: string): DialectAdapter | undefined {
@@ -179,17 +182,37 @@ function bodyFromDecidePayload(raw: JsonObject): NormalizedBody {
 
 export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
   const env = opts.env ?? process.env;
+  const now = opts.now ?? (() => Date.now());
   const store = new SessionStore();
+  const planWindows = new PlanWindowStore();
+  const board = new StatusBoard(opts.policy, now);
+  const log = opts.log ?? (() => undefined);
   const service = new RouterService({
     policy: opts.policy,
     judge: opts.judge,
     store,
-    log: opts.log ?? (() => undefined),
-    now: opts.now ?? (() => Date.now()),
+    log: (record) => {
+      try {
+        board.record(record);
+      } catch (e) {
+        console.error(`jev-router: status not updated: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      log(record);
+    },
+    now,
     randomId: opts.randomId ?? (() => crypto.randomUUID()),
+    planWindows,
   });
   if (opts.shadow && !opts.policy.candidates[opts.shadow]) throw new Error(`shadow candidate '${opts.shadow}' is not in the policy`);
-  const relayDeps = { policy: opts.policy, service, env, fetch: opts.fetch ?? fetch, ...(opts.shadow ? { shadow: opts.shadow } : {}) };
+  const relayDeps = {
+    policy: opts.policy,
+    service,
+    env,
+    fetch: opts.fetch ?? fetch,
+    planWindows,
+    now,
+    ...(opts.shadow ? { shadow: opts.shadow } : {}),
+  };
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -197,6 +220,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     const path = url.pathname;
     const method = req.method ?? "GET";
     const headers = flattenHeaders(req);
+
+    if (opts.token) {
+      if (isPreflight(method, headers)) {
+        res.writeHead(204, preflightHeaders(headers));
+        res.end();
+        return;
+      }
+      for (const [k, v] of Object.entries(corsResponseHeaders(headers))) res.setHeader(k, v);
+    }
 
     const isProbe = method === "HEAD" && path === "/api/hello";
     if (opts.token && path !== "/healthz" && !isProbe && !presentsToken(headers, opts.token)) {
@@ -210,6 +242,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     }
     if (method === "GET" && path === "/healthz") {
       sendJson(res, 200, JSON.stringify({ ok: true, sessions: store.size }));
+      return;
+    }
+    if (method === "GET" && path === "/status") {
+      sendJson(res, 200, JSON.stringify(board.report(planWindows.snapshot())));
       return;
     }
     if (method === "GET" && path === "/v1/models") {
@@ -232,6 +268,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     }
 
     if (method === "POST") {
+      if (!declaresJson(headers)) {
+        const dialect = dialectForPath(path)?.dialect ?? (path === "/v1/messages/count_tokens" ? "anthropic" : undefined);
+        sendJson(res, 415, errorBody(dialect, 415, "jev-router: POST bodies must be sent as content-type application/json"));
+        return;
+      }
       // Client-disconnect detection. Node emits close on the response when the client goes away mid-stream,
       // with the response unfinished. The request's own close event is not usable: it fires when the body ends.
       // Bun's node:http currently emits nothing on a mid-stream abort, so cancellation does not propagate there.

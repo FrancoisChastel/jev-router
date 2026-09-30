@@ -1,9 +1,9 @@
 import { plan } from "../core/decide";
 import type { Policy } from "../core/policy/types";
 import type { DecisionRecord } from "../core/record";
-import { emptySession } from "../core/session";
+import { emptySession, withUsage } from "../core/session";
 import { type Decision, EFFORT_ORDER, type Effort, type NormalizedRequest, type SessionState } from "../core/types";
-import { costOf } from "./stats";
+import { costOf, recordCostUsd, servedUsage } from "./stats";
 
 export interface ReplayResult {
   readonly id: string;
@@ -37,6 +37,7 @@ function requestFrom(r: DecisionRecord): NormalizedRequest {
     ...(effort ? { requestedEffort: effort } : {}),
     ...(r.contextCompacted ? { contextCompacted: true } : {}),
     toolOutcomes: r.toolOutcomes ?? [],
+    ...(r.plan ? { planWindow: r.plan } : {}),
   };
 }
 
@@ -70,12 +71,15 @@ export function replay(records: readonly DecisionRecord[], policy: Policy, polic
         decision = c.decision;
         session = c.session;
       }
+      // Feed the recorded usage back so cache-aware switching sees what the live router saw.
+      session = withUsage(session, r.usage);
       if (decision.candidate !== r.decision.candidate) changed += 1;
-      if (r.usage) {
-        const served = policy.candidates[r.shadow?.served ?? r.decision.candidate];
+      const answer = servedUsage(r);
+      if (r.usage && answer) {
         const now = policy.candidates[decision.candidate];
-        if (served) recordedCost += costOf(served, r.usage);
-        if (now) replayedCost += costOf(now, r.usage);
+        recordedCost += recordCostUsd(r, policy);
+        // The replayed tier is priced on the answer's own tokens; replay cannot know whether it would have cascaded.
+        if (now) replayedCost += costOf(now, answer);
       }
       results.push({ id: r.id, session: r.session, turn: r.turn, recorded: r.decision, replayed: decision });
     }

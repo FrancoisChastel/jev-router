@@ -1,4 +1,4 @@
-import type { Effort, Harness, ToolClass } from "../types";
+import type { Effort, Harness, ToolClass, WireDialect } from "../types";
 import type { CompiledExpr } from "./expr";
 
 export type JudgeTransport = "typesafe" | "vercel" | "openrouter" | "mock";
@@ -28,6 +28,10 @@ export interface EgressInput {
   readonly mount?: string;
   /** `subscription` marks an upstream billed by a plan; candidate prices are then API-equivalent weights, not dollars. */
   readonly billing?: "usd" | "subscription";
+  /** Send no credentials at all, for a local server such as Ollama. */
+  readonly no_auth?: boolean;
+  /** Wire formats the upstream accepts. Candidates behind this egress are skipped for other formats. Default: all. */
+  readonly dialects?: readonly WireDialect[];
 }
 
 export interface CandidateCapabilities {
@@ -54,6 +58,8 @@ export interface CandidateInput {
 export interface RuleAction {
   readonly pin?: string;
   readonly at_least?: string;
+  /** A cap: never serve above this tier this turn, whatever else decided. Applied after every other action. */
+  readonly at_most?: string;
   readonly up?: number;
   readonly allow_down?: boolean;
   readonly effort?: Effort;
@@ -70,6 +76,22 @@ export interface SwitchInput {
   readonly prefer_effort_over_model?: boolean;
 }
 
+/** What makes a routed response count as a failed attempt worth retrying one tier up. */
+export type CascadeTrigger = "upstream_error" | "empty" | "refusal" | "truncated";
+
+export interface CascadeInput {
+  readonly enabled?: boolean;
+  readonly on?: readonly CascadeTrigger[];
+  /** How many further tiers to try after the first attempt. */
+  readonly max_retries?: number;
+  /** Hold the first attempt's response back until it has been assessed. Without it only `upstream_error` can trigger. */
+  readonly buffer?: boolean;
+  readonly buffer_max_bytes?: number;
+  readonly buffer_max_ms?: number;
+  /** A retry is not started when its estimated cost would push the request's total above this. */
+  readonly budget_usd?: number;
+}
+
 export interface PolicyDefInput {
   readonly default: string;
   /** Candidates this policy may use, cheapest first. Defaults to every candidate ordered by input price. */
@@ -82,6 +104,7 @@ export interface PolicyDefInput {
   readonly rules: readonly RuleInput[];
   readonly switch?: SwitchInput;
   readonly tool_semantics?: Partial<Record<ToolClass, readonly string[]>>;
+  readonly cascade?: CascadeInput;
 }
 
 export interface RouteInput {
@@ -120,6 +143,17 @@ export interface PolicyDef {
   readonly rules: readonly Rule[];
   readonly switch: Required<SwitchInput>;
   readonly tool_semantics: Partial<Record<ToolClass, readonly string[]>>;
+  readonly cascade: Cascade;
+}
+
+export interface Cascade {
+  readonly enabled: boolean;
+  readonly on: readonly CascadeTrigger[];
+  readonly max_retries: number;
+  readonly buffer: boolean;
+  readonly buffer_max_bytes: number;
+  readonly buffer_max_ms: number;
+  readonly budget_usd?: number;
 }
 
 export interface JudgeConfig extends JudgeConfigInput {

@@ -8,6 +8,12 @@ describe("policy loading", () => {
     expect(tierOrder(p, "default")).toEqual(["fast", "mid", "frontier"]);
   });
 
+  test("a hand-written policy without switch keeps both switch behaviours off", () => {
+    const raw = minimalPolicy();
+    delete raw.policies.default.switch;
+    expect(loadPolicy(raw).policies.default?.switch).toEqual({ cache_penalty: false, prefer_effort_over_model: false });
+  });
+
   test("explicit order wins", () => {
     const raw = minimalPolicy();
     raw.policies.default.order = ["frontier", "fast", "mid"];
@@ -99,5 +105,64 @@ describe("candidate subsets and mounted egress", () => {
     expect(() => loadPolicy(raw)).toThrow(/distinct/);
     raw.egress = { a: { base_url: "https://x", billing: "credits" as "usd" } };
     expect(() => loadPolicy(raw)).toThrow(/billing/);
+  });
+});
+
+describe("cascade config", () => {
+  const withCascade = (cascade: unknown) => {
+    const raw = minimalPolicy();
+    (raw.policies.default as { cascade?: unknown }).cascade = cascade;
+    return raw;
+  };
+
+  test("is off by default with documented defaults", () => {
+    const def = loadPolicy(minimalPolicy()).policies.default!;
+    expect(def.cascade).toEqual({
+      enabled: false,
+      on: ["upstream_error", "empty"],
+      max_retries: 1,
+      buffer: true,
+      buffer_max_bytes: 262144,
+      buffer_max_ms: 20000,
+    });
+  });
+
+  test("accepts a full config", () => {
+    const def = loadPolicy(
+      withCascade({
+        enabled: true,
+        on: ["upstream_error", "empty", "refusal", "truncated"],
+        max_retries: 2,
+        buffer: true,
+        buffer_max_bytes: 1024,
+        buffer_max_ms: 500,
+        budget_usd: 0.25,
+      }),
+    ).policies.default!;
+    expect(def.cascade).toMatchObject({ enabled: true, max_retries: 2, budget_usd: 0.25 });
+    expect(def.cascade.on).toHaveLength(4);
+  });
+
+  test("without buffering the default triggers shrink to upstream_error", () => {
+    const def = loadPolicy(withCascade({ enabled: true, buffer: false })).policies.default!;
+    expect(def.cascade.on).toEqual(["upstream_error"]);
+  });
+
+  test("rejects malformed values with messages that name the field", () => {
+    const cases: [unknown, RegExp][] = [
+      ["yes", /cascade must be an object/],
+      [{ enabled: "true" }, /cascade.enabled must be a boolean/],
+      [{ on: ["empty", "timeout"] }, /cascade.on.*timeout/],
+      [{ on: [] }, /cascade.on must list at least one/],
+      [{ on: ["empty", "empty"] }, /cascade.on must not repeat/],
+      [{ max_retries: 0 }, /cascade.max_retries must be a positive integer/],
+      [{ buffer: 1 }, /cascade.buffer must be a boolean/],
+      [{ buffer_max_bytes: -1 }, /cascade.buffer_max_bytes must be a positive integer/],
+      [{ buffer_max_ms: 1.5 }, /cascade.buffer_max_ms must be a positive integer/],
+      [{ budget_usd: 0 }, /cascade.budget_usd must be a positive number/],
+      [{ retries: 2 }, /cascade: unknown key 'retries'/],
+      [{ buffer: false, on: ["empty"] }, /cascade.on.*'empty' needs buffer: true/],
+    ];
+    for (const [cascade, message] of cases) expect(() => loadPolicy(withCascade(cascade))).toThrow(message);
   });
 });

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { GEMINI_ROUTE_MODEL } from "../runtime/gemini-defaults";
 import { resolvePolicyPath } from "../runtime/paths";
+import { cursorSetupSteps } from "./expose";
 import { geminiEndpoint, planGeminiEnv, planGeminiSettings } from "./gemini-plans";
 import { parseJsonc, stripJsonComments } from "./jsonc";
 import {
@@ -15,8 +16,10 @@ import {
   type SetupTarget,
 } from "./plans";
 
-export type Agent = "claude-code" | "codex" | "opencode" | "gemini" | "pi";
-export const AGENTS: readonly Agent[] = ["claude-code", "codex", "opencode", "gemini", "pi"];
+export type Agent = "claude-code" | "codex" | "opencode" | "gemini" | "pi" | "cursor";
+export const AGENTS: readonly Agent[] = ["claude-code", "codex", "opencode", "gemini", "pi", "cursor"];
+
+const DEFAULT_PORT = 4141;
 
 export interface SetupOptions {
   readonly agents: readonly Agent[];
@@ -113,6 +116,8 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
       else opts.log("  plugin bundle not found next to the CLI; sensors skipped (model routing still works through the provider)");
     } else if (agent === "gemini") {
       await setupGemini(home, target, opts);
+    } else if (agent === "cursor") {
+      for (const line of cursorSetupSteps(Number(new URL(opts.baseUrl).port) || DEFAULT_PORT)) opts.log(line);
     } else {
       opts.log("  run: pi install npm:jev-router   (in-process extension; no relay needed)");
     }
