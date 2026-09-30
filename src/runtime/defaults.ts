@@ -8,6 +8,7 @@ import type {
   RuleAction,
   RuleInput,
 } from "../core/policy/types";
+import type { OllamaDetection } from "./ollama";
 import type { CodexModel, SubscriptionDetection } from "./subscriptions";
 
 /**
@@ -76,6 +77,23 @@ export function rulesFor(tiers: TierIds): RuleInput[] {
     if (applicable) out.push({ when: r.when, then: then as RuleAction });
   }
   return out;
+}
+
+/** Five-hour plan window utilization at which a subscription policy stops escalating past the middle tier. */
+export const PLAN_SOFT_CAP = 0.8;
+/** Utilization at which it drops to the cheapest tier so the user does not hit the wall mid-task. */
+export const PLAN_HARD_CAP = 0.95;
+
+/**
+ * Rules appended to plan-billed policies: as the five-hour window fills, cap the tier. `plan_5h` is unknown until the
+ * upstream has reported it, so these never fire before then. Without a middle tier only the hard cap applies.
+ */
+export function planRulesFor(tiers: TierIds): RuleInput[] {
+  if (!tiers.mid && !tiers.frontier) return [];
+  return [
+    ...(tiers.mid ? [{ when: `plan_5h >= ${PLAN_SOFT_CAP}`, then: { at_most: tiers.mid } }] : []),
+    { when: `plan_5h >= ${PLAN_HARD_CAP}`, then: { at_most: tiers.fast } },
+  ];
 }
 
 /**
@@ -219,6 +237,33 @@ export interface BuildPolicyOptions {
   readonly catalog?: ReadonlyMap<string, CatalogEntry>;
   /** Coding subscriptions found on this machine; each adds its own candidates, egress, route, and policy. */
   readonly subscriptions?: SubscriptionDetection;
+  /** A local Ollama server; adds a free `local` tier at the bottom of the default policy. */
+  readonly ollama?: Pick<OllamaDetection, "baseUrl" | "model">;
+}
+
+export const OLLAMA_EGRESS = "ollama";
+export const LOCAL_CANDIDATE = "local";
+
+/** The free local tier: auxiliary and compaction calls go to it; everything else keeps the default rules. */
+function addLocalTier(
+  ollama: Pick<OllamaDetection, "baseUrl" | "model">,
+  egress: Record<string, EgressInput>,
+  candidates: Record<string, CandidateInput>,
+  def: PolicyDefInput,
+): PolicyDefInput {
+  // Ollama speaks OpenAI chat completions under /v1; Anthropic-format callers never land on it.
+  egress[OLLAMA_EGRESS] = { base_url: ollama.baseUrl, no_auth: true, dialects: ["openai-chat"], billing: "usd" };
+  candidates[LOCAL_CANDIDATE] = {
+    model: ollama.model,
+    via: OLLAMA_EGRESS,
+    price: { in: 0, out: 0 },
+    capabilities: { tools: true, vision: false },
+  };
+  return {
+    ...def,
+    order: [LOCAL_CANDIDATE, ...(def.order ?? [])],
+    rules: [{ when: "request_class in [auxiliary, compaction]", then: { pin: LOCAL_CANDIDATE } }, ...def.rules],
+  };
 }
 
 interface PricedCodexModel {
@@ -305,10 +350,11 @@ export function buildDefaultPolicy(opts: BuildPolicyOptions): PolicyInput {
     }
     routes.push({ id: "claude-code/auto", harness: "claude-code", policy: "claude-code" });
     // Sonnet is where Claude Code users already live; Haiku takes auxiliary calls, Opus the turns that earn it.
+    const claudeTiers: TierIds = { fast: "claude-haiku", mid: "claude-sonnet", frontier: "claude-opus" };
     policies["claude-code"] = policyDef(
       "claude-sonnet",
       ["claude-haiku", "claude-sonnet", "claude-opus"],
-      rulesFor({ fast: "claude-haiku", mid: "claude-sonnet", frontier: "claude-opus" }),
+      [...rulesFor(claudeTiers), ...planRulesFor(claudeTiers)],
     );
   } else {
     routes.push({ id: "claude-code/auto", harness: "claude-code", policy: "default" });
@@ -340,10 +386,12 @@ export function buildDefaultPolicy(opts: BuildPolicyOptions): PolicyInput {
       }
       const order = ["codex-fast", ...(ids.mid ? [ids.mid] : []), ...(ids.frontier ? [ids.frontier] : [])];
       routes.push({ id: "auto", harness: "codex", policy: "codex" });
-      policies.codex = policyDef("codex-fast", order, rulesFor(ids));
+      policies.codex = policyDef("codex-fast", order, [...rulesFor(ids), ...planRulesFor(ids)]);
     }
   }
 
+  // Added last so candidates without `via` keep resolving to the gateway or plan egress they used before.
+  if (opts.ollama) policies.default = addLocalTier(opts.ollama, egressMap, candidates, policies.default as PolicyDefInput);
   const judgeModel =
     detection.judge === "openrouter"
       ? EGRESS_DEFAULTS.openrouter.judge_model

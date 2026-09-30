@@ -2,6 +2,16 @@
 export type Effort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORT_ORDER: readonly Effort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
+/** Wire formats the relay speaks; an egress may declare the subset its upstream accepts. */
+export type WireDialect = "anthropic" | "openai-chat" | "openai-responses";
+export const WIRE_DIALECTS: readonly WireDialect[] = ["anthropic", "openai-chat", "openai-responses"];
+
+/** Plan usage-window utilization observed on a subscription egress, each a fraction 0..1. */
+export interface PlanUtilization {
+  readonly fiveHour?: number;
+  readonly sevenDay?: number;
+}
+
 export type Harness = "pi" | "claude-code" | "codex" | "opencode" | "cursor" | "hermes" | "unknown";
 
 /** Request class as reported by Claude Code gateway hint headers; other harnesses map into it. */
@@ -41,6 +51,10 @@ export interface NormalizedRequest {
   readonly contextCompacted?: boolean;
   /** Outcomes of the tool calls whose results this request carries. */
   readonly toolOutcomes: readonly ToolOutcome[];
+  /** Wire format the request arrived in; candidates whose egress cannot speak it are filtered out. Absent: any. */
+  readonly dialect?: WireDialect;
+  /** Plan window utilization last observed on the egress this request would bill, when known. */
+  readonly planWindow?: PlanUtilization;
 }
 
 export interface CurrentAssignment {

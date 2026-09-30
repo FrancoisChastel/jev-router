@@ -17,7 +17,9 @@ import {
   requestClassOf,
   sendJson,
   upstreamHeaders,
+  usageLikeHeaders,
 } from "./http-util";
+import type { PlanWindowStore } from "./plan-window";
 import type { RouterService } from "./service";
 import { createSseTransform } from "./sse";
 
@@ -28,6 +30,27 @@ export interface RelayDeps {
   readonly fetch: FetchLike;
   /** Shadow mode: always serve this candidate while logging what the router would have done. */
   readonly shadow?: string;
+  /** Receives the usage-window headers of every response from a plan-billed egress. */
+  readonly planWindows?: PlanWindowStore;
+  readonly now?: () => number;
+}
+
+/** Record the plan window a subscription egress reported on this response. Never throws into the response path. */
+function observePlan(deps: RelayDeps, name: string, egress: EgressInput, upstream: Response): void {
+  if (!deps.planWindows || egress.billing !== "subscription") return;
+  try {
+    deps.planWindows.update(name, (h) => upstream.headers.get(h), (deps.now ?? Date.now)());
+  } catch (e) {
+    console.error(`jev-router: plan window not recorded: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** A key from the egress's environment variable, or nothing when the egress forwards the caller's or needs none. */
+function credentialsFor(deps: RelayDeps, name: string, egress: EgressInput): { readonly apiKey?: string; readonly error?: string } {
+  const apiKey = egress.api_key_env ? deps.env[egress.api_key_env] : undefined;
+  if (apiKey) return { apiKey };
+  if (egress.forward_auth === true || egress.no_auth === true) return {};
+  return { error: `egress '${name}' has no API key in $${egress.api_key_env ?? "(unset)"}` };
 }
 
 const CHARS_PER_TOKEN = 4;
@@ -147,6 +170,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     ...(requestClass ? { requestClass } : {}),
     ...(r.headers["x-claude-code-context-compacted"] ? { contextCompacted: true } : {}),
     estimatedInputTokens: Math.ceil(r.rawBody.length / CHARS_PER_TOKEN),
+    // The body's own shape, which is what the upstream must read (Cursor sends Responses bodies on the chat path).
+    dialect: shape.dialect,
   });
   const servedId = deps.shadow && policy.candidates[deps.shadow] ? deps.shadow : decided.decision.candidate;
   const candidate = policy.candidates[servedId];
@@ -194,12 +219,13 @@ export async function proxy(
   target: { readonly name: string; readonly egress: EgressInput },
   p: ProxyRequest,
 ): Promise<void> {
-  const apiKey = target.egress.api_key_env ? deps.env[target.egress.api_key_env] : undefined;
-  const forwardAuth = target.egress.forward_auth === true;
-  if (!forwardAuth && !apiKey) {
+  const creds = credentialsFor(deps, target.name, target.egress);
+  if (creds.error) {
     sendJson(p.res, 502, errorBody(undefined, 502, `egress '${target.name}' has no API key configured`));
     return;
   }
+  const apiKey = creds.apiKey;
+  const forwardAuth = target.egress.forward_auth === true;
   const url = `${target.egress.base_url.replace(/\/+$/, "")}${p.path}${p.query}`;
   // "anthropic" makes upstreamHeaders inject both bearer and x-api-key when a key is used; harmless elsewhere.
   const headers = upstreamHeaders(p.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: "anthropic" });
@@ -222,6 +248,9 @@ export async function proxy(
       sendJson(p.res, 502, errorBody(undefined, 502, `upstream unreachable: ${e instanceof Error ? e.message : String(e)}`));
     return;
   }
+  if (process.env.JEV_ROUTER_DEBUG_HEADERS)
+    for (const [k, v] of usageLikeHeaders(upstream.headers)) console.error(`jev-router headers: ${target.name} ${k}: ${v}`);
+  observePlan(deps, target.name, target.egress, upstream);
   p.res.statusCode = upstream.status;
   copyResponseHeaders(upstream, p.res);
   p.res.setHeader("x-jev-router-source", "proxy");
@@ -281,13 +310,14 @@ async function forward(
       console.error(`jev-router: onDone callback failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
-  const apiKey = target.egress.api_key_env ? deps.env[target.egress.api_key_env] : undefined;
-  const forwardAuth = target.egress.forward_auth === true;
-  if (!forwardAuth && !apiKey) {
-    done(false, undefined, `egress '${target.name}' has no API key in $${target.egress.api_key_env ?? "(unset)"}`);
+  const creds = credentialsFor(deps, target.name, target.egress);
+  if (creds.error) {
+    done(false, undefined, creds.error);
     sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, `egress '${target.name}' has no API key configured`));
     return;
   }
+  const apiKey = creds.apiKey;
+  const forwardAuth = target.egress.forward_auth === true;
   const url = `${target.egress.base_url.replace(/\/+$/, "")}${r.path}${r.query}`;
   const headers = upstreamHeaders(r.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: r.dialect.dialect });
   const abort = new AbortController();
@@ -314,6 +344,9 @@ async function forward(
     console.error(
       `jev-router forward: ${upstream.status} content-type=${upstream.headers.get("content-type")} requestedModel=${opts.requestedModel ?? "(none)"} body=${upstream.body ? "yes" : "no"}`,
     );
+  if (process.env.JEV_ROUTER_DEBUG_HEADERS)
+    for (const [k, v] of usageLikeHeaders(upstream.headers)) console.error(`jev-router headers: ${target.name} ${k}: ${v}`);
+  observePlan(deps, target.name, target.egress, upstream);
   r.res.statusCode = upstream.status;
   copyResponseHeaders(upstream, r.res);
   r.res.setHeader("x-jev-router-source", opts.source);

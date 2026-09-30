@@ -1,6 +1,6 @@
 import type { Answer } from "../judge/types";
 import type { StageScore } from "./signals/stage";
-import type { Decision, Harness, NormalizedRequest, RequestClass, SessionState } from "./types";
+import type { Decision, Harness, NormalizedRequest, PlanUtilization, RequestClass, SessionState } from "./types";
 
 export interface JudgeTrace {
   readonly questions: readonly string[];
@@ -37,6 +37,8 @@ export interface DecisionRecord {
   readonly usage?: TokenUsage;
   /** Present in shadow mode: the candidate that actually served the request while the decision was only logged. */
   readonly shadow?: { readonly served: string };
+  /** Plan window utilization the decision saw on a subscription egress, when one had been observed. */
+  readonly plan?: PlanUtilization;
 }
 
 export interface ApplyOutcome {
@@ -91,5 +93,6 @@ export function buildDecisionRecord(input: RecordInput): DecisionRecord {
     ...(input.apply ? { apply: input.apply } : {}),
     ...(input.usage ? { usage: input.usage } : {}),
     ...(input.shadow ? { shadow: input.shadow } : {}),
+    ...(request.planWindow ? { plan: request.planWindow } : {}),
   };
 }

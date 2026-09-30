@@ -106,6 +106,26 @@ describe("replay", () => {
     expect(out.replayedCostUsd).toBeLessThan(out.recordedCostUsd);
   });
 
+  test("the recorded plan window is replayed, so plan caps apply to it", () => {
+    const answers = {
+      difficulty: { type: "score" as const, score: 3, probabilities: {}, confidence: 0.9 },
+      needs_reasoning: { type: "noul" as const, noul: 0.9 },
+      stakes: { type: "score" as const, score: 3, probabilities: {}, confidence: 0.9 },
+    };
+    const judged = { judge: { questions: Object.keys(answers), answers } };
+    const capped = minimalPolicy();
+    capped.policies.default.rules.push({ when: "plan_5h >= 0.8", then: { at_most: "mid" } });
+    const out = replay(
+      [
+        rec({ candidate: "frontier", inTok: 100, outTok: 10, session: "a", ...judged }),
+        rec({ candidate: "frontier", inTok: 100, outTok: 10, session: "b", plan: { fiveHour: 0.85 }, ...judged }),
+      ],
+      loadPolicy(capped),
+      "default",
+    );
+    expect(out.results.map((r) => r.replayed.candidate)).toEqual(["frontier", "mid"]);
+  });
+
   test("turns whose judge answers were not recorded fall open in replay and are flagged", () => {
     const recorded = [
       rec({
