@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - The relay detects Cursor by `User-Agent: Cursor/1.0`, classifies Cursor's tool names, sends Cursor's chat requests bound for OpenRouter to OpenRouter's Cursor endpoint, and reads and rewrites a Responses-shaped body that arrives on the chat-completions path in that shape.
 - A relay running with `--token` answers CORS preflights and adds `access-control-allow-origin: *` to responses for browser requests, so Cursor's desktop app can verify the key. A relay without a token still sends no CORS headers.
 
+### Security
+
+- Every POST the relay serves (inference, mounted paths, `count_tokens`, `/observe`, `/decide`, `/hooks/*`) now requires a `content-type` containing `application/json` and answers 415 otherwise. Before this, a web page could send a cross-origin "simple" POST (text/plain, no preflight) to a loopback relay and spend the keys it injects. Every supported harness already sends JSON, so nothing changes for them.
+
 ## [0.2.0] - 2026-09-27
 
 ### Added

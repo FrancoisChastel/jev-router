@@ -9,7 +9,7 @@ import { corsResponseHeaders, isPreflight, preflightHeaders } from "./cors";
 import { DIALECTS } from "./dialects";
 import { asEffort, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
 import { claudeCodeHookToObserve, codexHookToObserve } from "./hooks";
-import { errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
+import { declaresJson, errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
 import { proxy, relay } from "./relay";
 import { RouterService } from "./service";
 import { type ObserveEvent, SessionStore } from "./session-store";
@@ -219,6 +219,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
     }
 
     if (method === "POST") {
+      if (!declaresJson(headers)) {
+        const dialect = dialectForPath(path)?.dialect ?? (path === "/v1/messages/count_tokens" ? "anthropic" : undefined);
+        sendJson(res, 415, errorBody(dialect, 415, "jev-router: POST bodies must be sent as content-type application/json"));
+        return;
+      }
       // Client-disconnect detection. Node emits close on the response when the client goes away mid-stream,
       // with the response unfinished. The request's own close event is not usable: it fires when the body ends.
       // Bun's node:http currently emits nothing on a mid-stream abort, so cancellation does not propagate there.
