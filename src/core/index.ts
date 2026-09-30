@@ -1,3 +1,5 @@
+export type { CachePenaltyInput, SwitchEstimateInput, SwitchSavingInput } from "./cache";
+export { CACHE_READ_DISCOUNT, cachePenaltyUsd, estimateSwitch, switchSavingUsd } from "./cache";
 export { DETERMINISTIC_KEYS, knownIdentifiers } from "./context-keys";
 export { counterfactualCosts, estimateCostUsd } from "./cost";
 export type { Concluded, PlanInput, PlanOutcome } from "./decide";
@@ -9,7 +11,7 @@ export { executionPhaseQuestions, optionPickQuestion, taskPhaseQuestions } from 
 export type { ApplyOutcome, DecisionRecord, JudgeTrace, RecordInput, TokenUsage } from "./record";
 export { buildDecisionRecord } from "./record";
 export type { AdvanceOptions, SessionKey } from "./session";
-export { advanceSession, emptySession, resolveSessionKey } from "./session";
+export { advanceSession, emptySession, resolveSessionKey, withUsage } from "./session";
 export type { StageDimensions, StageOptions, StageScore } from "./signals/stage";
 export { SINGLE_AXIS_CONFIDENCE, scoreStage } from "./signals/stage";
 export type { ToolSemantics } from "./signals/tool-semantics";
