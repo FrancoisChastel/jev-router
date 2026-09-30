@@ -20,6 +20,16 @@ const TERMINAL_TYPES: ReadonlySet<string> = new Set([
   "error",
 ]);
 
+/** The usage object an event carries: top level (chat), inside `message` (Anthropic), or inside `response` (Responses). */
+export function usageOf(obj: Record<string, unknown>): Record<string, unknown> | undefined {
+  const inner = (k: string): unknown => {
+    const v = obj[k];
+    return typeof v === "object" && v !== null ? (v as { usage?: unknown }).usage : undefined;
+  };
+  const usage = obj.usage ?? inner("message") ?? inner("response");
+  return typeof usage === "object" && usage !== null ? (usage as Record<string, unknown>) : undefined;
+}
+
 function rewriteDataLine(rawLine: string, opts: SseTransformOptions): string {
   const cr = rawLine.endsWith("\r") ? "\r" : "";
   const line = cr ? rawLine.slice(0, -1) : rawLine;
@@ -58,11 +68,8 @@ function rewriteDataLine(rawLine: string, opts: SseTransformOptions): string {
       changed = true;
     }
   }
-  const usage =
-    obj.usage ??
-    (typeof message === "object" && message !== null ? (message as { usage?: unknown }).usage : undefined) ??
-    (typeof response === "object" && response !== null ? (response as { usage?: unknown }).usage : undefined);
-  if (opts.onUsage && typeof usage === "object" && usage !== null) opts.onUsage(usage as Record<string, unknown>);
+  const usage = usageOf(obj);
+  if (opts.onUsage && usage) opts.onUsage(usage);
   if (!changed) return rawLine;
   return `${line.slice(0, DATA_PREFIX.length)} ${JSON.stringify(out)}${cr}`;
 }

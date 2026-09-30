@@ -397,6 +397,10 @@ async function stats(args: readonly string[]): Promise<void> {
     console.log(`always ${id.padEnd(12)} ${usd(b.costUsd).padStart(9)} ${usd(b.savingsUsd).padStart(10)} ${pct(b.savingsPct).padStart(7)}`);
   console.log(`by candidate ${JSON.stringify(s.byCandidate)}`);
   console.log(`by source    ${JSON.stringify(s.bySource)}`);
+  if (s.cascades.requests > 0)
+    console.log(
+      `cascades     ${s.cascades.requests} requests retried ${s.cascades.retries} times, ${usd(s.cascades.discardedCostUsd)} spent on attempts the client never saw (included in actual cost)`,
+    );
   const plans = Object.entries(policy.egress)
     .filter(([, e]) => e.billing === "subscription")
     .map(([n]) => n);

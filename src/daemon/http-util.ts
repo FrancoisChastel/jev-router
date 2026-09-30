@@ -53,7 +53,7 @@ export function upstreamHeaders(
   return out;
 }
 
-export function copyResponseHeaders(from: Response, to: ServerResponse): void {
+export function copyResponseHeaders(from: { readonly headers: Response["headers"] }, to: ServerResponse): void {
   from.headers.forEach((value, key) => {
     if (!RESPONSE_DROP.has(key.toLowerCase())) to.setHeader(key, value);
   });

@@ -67,7 +67,7 @@ function makeTiers(fullOrder: readonly string[], eligible: readonly string[]): T
   };
 }
 
-function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
+export function isCapable(candidate: Candidate, request: NormalizedRequest): boolean {
   const caps = candidate.capabilities;
   if (!caps) return true;
   if (request.hasImages && caps.vision === false) return false;
@@ -80,7 +80,8 @@ function sortedEfforts(candidate: Candidate): readonly Effort[] {
   return [...(candidate.effort ?? [])].sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
 }
 
-function resolveEffort(candidate: Candidate, wanted: Effort | undefined): { effort?: Effort; clamped: boolean } {
+/** Clamp a wanted effort to the candidate's list, rounding down; the candidate's default when nothing is wanted. */
+export function resolveEffort(candidate: Candidate, wanted: Effort | undefined): { effort?: Effort; clamped: boolean } {
   const supported = sortedEfforts(candidate);
   if (supported.length === 0) return { clamped: false };
   const want = wanted ?? candidate.default_effort;

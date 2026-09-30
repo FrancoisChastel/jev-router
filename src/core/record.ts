@@ -1,6 +1,6 @@
 import type { Answer } from "../judge/types";
 import type { StageScore } from "./signals/stage";
-import type { Decision, Harness, NormalizedRequest, RequestClass, SessionState } from "./types";
+import type { Decision, Effort, Harness, NormalizedRequest, RequestClass, SessionState } from "./types";
 
 export interface JudgeTrace {
   readonly questions: readonly string[];
@@ -37,6 +37,28 @@ export interface DecisionRecord {
   readonly usage?: TokenUsage;
   /** Present in shadow mode: the candidate that actually served the request while the decision was only logged. */
   readonly shadow?: { readonly served: string };
+  /** Present when a cascade retried the request or gave up on retrying it. `usage` above is then the sum over attempts. */
+  readonly cascade?: CascadeRecord;
+}
+
+/** One upstream call made for a cascaded request. `outcome` is `served`, a cascade trigger, or `unreachable`. */
+export interface CascadeAttempt {
+  readonly candidate: string;
+  readonly model: string;
+  readonly effort?: Effort;
+  readonly outcome: string;
+  readonly detail?: string;
+  readonly usage?: TokenUsage;
+  /** List-price cost of this attempt's usage. */
+  readonly costUsd?: number;
+}
+
+export interface CascadeRecord {
+  readonly attempts: readonly CascadeAttempt[];
+  /** The candidate whose response the client received. */
+  readonly served: string;
+  /** Why the cascade stopped short of a retry it would otherwise have made: `buffer_max_bytes`, `buffer_max_ms`, `budget_usd`. */
+  readonly abandoned?: string;
 }
 
 export interface ApplyOutcome {
@@ -65,6 +87,7 @@ export interface RecordInput {
   readonly apply?: ApplyOutcome;
   readonly usage?: TokenUsage;
   readonly shadow?: { readonly served: string };
+  readonly cascade?: CascadeRecord;
 }
 
 export function buildDecisionRecord(input: RecordInput): DecisionRecord {
@@ -91,5 +114,6 @@ export function buildDecisionRecord(input: RecordInput): DecisionRecord {
     ...(input.apply ? { apply: input.apply } : {}),
     ...(input.usage ? { usage: input.usage } : {}),
     ...(input.shadow ? { shadow: input.shadow } : {}),
+    ...(input.cascade ? { cascade: input.cascade } : {}),
   };
 }
