@@ -38,6 +38,7 @@ export async function detectAgents(probe: AgentProbe): Promise<Agent[]> {
     ["claude-code", [join(probe.home, ".claude")], "claude"],
     ["codex", [join(probe.home, ".codex")], "codex"],
     ["opencode", [join(probe.home, ".config", "opencode")], "opencode"],
+    ["gemini", [join(probe.home, ".gemini")], "gemini"],
     ["pi", [join(probe.home, ".pi")], "pi"],
   ];
   const found: Agent[] = [];

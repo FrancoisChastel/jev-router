@@ -6,8 +6,10 @@ import type { Harness, RequestClass, ToolOutcome } from "../core/types";
 import type { FetchLike } from "../judge/http";
 import type { Judge } from "../judge/types";
 import { DIALECTS } from "./dialects";
-import { asEffort, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
-import { claudeCodeHookToObserve, codexHookToObserve } from "./hooks";
+import { isGeminiGeneratePath } from "./dialects/gemini";
+import { isCodeAssistGeneratePath } from "./dialects/gemini-code-assist";
+import { asEffort, type Dialect, type DialectAdapter, type JsonObject, type NormalizedBody } from "./dialects/types";
+import { claudeCodeHookToObserve, codexHookToObserve, geminiHookToObserve } from "./hooks";
 import { errorBody, flattenHeaders, readJsonBody, sendJson } from "./http-util";
 import { proxy, relay } from "./relay";
 import { RouterService } from "./service";
@@ -27,7 +29,7 @@ export interface DaemonOptions {
   /** Serve this candidate for every routed request and only log the router's decision. */
   readonly shadow?: string;
   /**
-   * Shared secret callers must present as `Authorization: Bearer <token>` or `x-api-key`. Required when
+   * Shared secret callers must present as `Authorization: Bearer <token>`, `x-api-key`, or `x-goog-api-key`. Required when
    * binding to anything other than loopback, because the relay injects real provider credentials.
    */
   readonly token?: string;
@@ -43,7 +45,12 @@ function sameSecret(a: string, b: string): boolean {
 
 function presentsToken(headers: Readonly<Record<string, string | undefined>>, token: string): boolean {
   const auth = headers.authorization ?? "";
-  return sameSecret(auth, `Bearer ${token}`) || sameSecret(headers["x-api-key"] ?? "", token);
+  return (
+    sameSecret(auth, `Bearer ${token}`) ||
+    sameSecret(headers["x-api-key"] ?? "", token) ||
+    // Gemini CLI sends its GEMINI_API_KEY this way.
+    sameSecret(headers["x-goog-api-key"] ?? "", token)
+  );
 }
 
 export interface RunningDaemon {
@@ -55,15 +62,19 @@ export interface RunningDaemon {
 }
 
 const DEFAULT_MAX_BODY = 64 * 1024 * 1024;
-const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "hermes", "unknown"]);
+const HARNESSES: ReadonlySet<string> = new Set(["pi", "claude-code", "codex", "opencode", "gemini", "hermes", "unknown"]);
 const OBSERVE_KINDS: ReadonlySet<string> = new Set(["tool_result", "compaction", "api_error", "subagent_start", "prompt"]);
 
 function dialectForPath(path: string): DialectAdapter | undefined {
   if (path === "/v1/messages") return DIALECTS.anthropic;
   if (path === "/v1/chat/completions") return DIALECTS["openai-chat"];
   if (path === "/v1/responses") return DIALECTS["openai-responses"];
+  if (isGeminiGeneratePath(path)) return DIALECTS.gemini;
   return undefined;
 }
+
+/** Gemini API paths other than generate (countTokens, model listing, files) that a Gemini egress mount proxies. */
+const GEMINI_API_PATH = /^\/(v1|v1beta|v1alpha)\/(models|tunedModels|cachedContents|files)\b/;
 
 interface Mount {
   readonly name: string;
@@ -85,8 +96,19 @@ function dialectForSubpath(sub: string): DialectAdapter | undefined {
   if (sub === "/responses" || sub === "/v1/responses") return DIALECTS["openai-responses"];
   if (sub === "/chat/completions" || sub === "/v1/chat/completions") return DIALECTS["openai-chat"];
   if (sub === "/messages" || sub === "/v1/messages") return DIALECTS.anthropic;
+  if (isGeminiGeneratePath(sub)) return DIALECTS.gemini;
+  if (isCodeAssistGeneratePath(sub)) return DIALECTS["gemini-code-assist"];
   return undefined;
 }
+
+/** Which header an injected key goes in when a mount proxies a non-inference call. */
+const keyDialectOption = (sub: string): { readonly keyDialect?: Dialect } => (GEMINI_API_PATH.test(sub) ? { keyDialect: "gemini" } : {});
+
+const HOOK_MAPPERS: Readonly<Record<string, (payload: JsonObject) => ObserveEvent | undefined>> = {
+  "/hooks/claude-code": claudeCodeHookToObserve,
+  "/hooks/codex": codexHookToObserve,
+  "/hooks/gemini": geminiHookToObserve,
+};
 
 /**
  * Codex checks the model it is told to use against the catalog its backend returns, so a proxied catalog gains an
@@ -203,6 +225,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         method,
         path: mounted.subpath,
         query: url.search,
+        ...keyDialectOption(mounted.subpath),
         ...(mounted.subpath === "/models" ? { transformJson: (j: JsonObject) => withAutoModel(j, opts.policy) } : {}),
       });
       return;
@@ -248,6 +271,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           query: url.search,
           rawBody: raw,
           clientGone: clientGone.signal,
+          ...keyDialectOption(mounted.subpath),
         });
         return;
       }
@@ -270,7 +294,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
         });
         return;
       }
-      if (path === "/hooks/claude-code" || path === "/hooks/codex") {
+      const hookMapper = HOOK_MAPPERS[path];
+      if (hookMapper) {
         let payload: unknown;
         try {
           payload = JSON.parse(raw);
@@ -279,7 +304,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<RunningDaemon> {
           return;
         }
         if (isObject(payload)) {
-          const event = path === "/hooks/claude-code" ? claudeCodeHookToObserve(payload) : codexHookToObserve(payload);
+          const event = hookMapper(payload);
           if (event) store.observe(event);
         }
         // Hook output format: an empty object means "no decision, carry on".

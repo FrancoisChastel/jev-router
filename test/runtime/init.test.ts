@@ -178,3 +178,72 @@ describe("subscription-backed policies", () => {
     expect(Object.keys(off.policy.candidates)).toEqual(["fast", "mid", "frontier"]);
   });
 });
+
+describe("gemini defaults", () => {
+  test("GEMINI_API_KEY is an inference key for Gemini CLI only, never the judge", () => {
+    const d = detectKeys({ GEMINI_API_KEY: "g" });
+    expect(d).toMatchObject({ judge: "mock", judgeKeyEnv: "", gemini: true, found: ["GEMINI_API_KEY"] });
+    expect(d.egress).toBeUndefined();
+    expect(detectKeys({ OPENROUTER_API_KEY: "o", GEMINI_API_KEY: "g" })).toMatchObject({ judge: "openrouter", egress: "openrouter" });
+    expect(detectKeys({ OPENROUTER_API_KEY: "o" }).gemini).toBeUndefined();
+  });
+
+  test("with GEMINI_API_KEY the policy gains the google egress, the lite < flash < pro ladder, and a gemini route", () => {
+    const p = loadPolicy(buildDefaultPolicy({ detection: detectKeys({ OPENROUTER_API_KEY: "o", GEMINI_API_KEY: "g" }) }));
+    expect(Object.keys(p.egress)).toEqual(["openrouter", "google"]);
+    expect(p.egress.google).toEqual({
+      base_url: "https://generativelanguage.googleapis.com",
+      api_key_env: "GEMINI_API_KEY",
+      mount: "/gemini",
+    });
+    expect(tierOrder(p, "gemini").map((id) => p.candidates[id]?.model)).toEqual([
+      "gemini-3.1-flash-lite",
+      "gemini-3.8-flash",
+      "gemini-3.1-pro-preview",
+    ]);
+    expect(p.candidates["gemini-lite"]).toMatchObject({ via: "google", price: { in: 0.25, out: 1.5 } });
+    expect(p.policies.gemini?.default).toBe("gemini-lite");
+    expect(p.policies.gemini?.rules.map((r) => r.then)).toContainEqual({ at_least: "gemini-flash" });
+    expect(p.routes).toContainEqual({ id: "auto", harness: "gemini", policy: "gemini" });
+    // The generic route and its candidates are unchanged.
+    expect(p.policies.default?.default).toBe("fast");
+  });
+
+  test("a Gemini CLI Google login routes through Code Assist with the login forwarded, and wins over a key", () => {
+    const p = loadPolicy(
+      buildDefaultPolicy({ detection: detectKeys({ GEMINI_API_KEY: "g" }), subscriptions: { gemini: { authType: "oauth-personal" } } }),
+    );
+    expect(p.egress.google).toBeUndefined();
+    expect(p.egress["gemini-code-assist"]).toEqual({
+      base_url: "https://cloudcode-pa.googleapis.com",
+      mount: "/code-assist",
+      forward_auth: true,
+      billing: "subscription",
+    });
+    expect(tierOrder(p, "gemini").map((id) => p.candidates[id]?.model)).toEqual([
+      "gemini-3.1-flash-lite",
+      "gemini-3-flash",
+      "gemini-3.1-pro-preview",
+    ]);
+    expect(
+      describeDetection(detectKeys({}), { gemini: { authType: "oauth-personal" } }).some((l) =>
+        l.startsWith("gemini  Gemini CLI Google login"),
+      ),
+    ).toBe(true);
+  });
+
+  test("gemini prices refresh from the google/ ids in the catalog; no key and no login means no gemini route", () => {
+    const catalog = parseOpenRouterCatalog({
+      data: [{ id: "google/gemini-3.8-flash", pricing: { prompt: "0.000001", completion: "0.000004" } }],
+    });
+    const p = loadPolicy(buildDefaultPolicy({ detection: detectKeys({ GEMINI_API_KEY: "g" }), catalog }));
+    expect(p.candidates["gemini-flash"]?.price).toEqual({ in: 1, out: 4 });
+    expect(p.candidates["gemini-lite"]?.price).toEqual({ in: 0.25, out: 1.5 });
+    expect(
+      loadPolicy(buildDefaultPolicy({ detection: detectKeys({ OPENROUTER_API_KEY: "o" }) })).routes.some((r) => r.harness === "gemini"),
+    ).toBe(false);
+    expect(describeDetection(detectKeys({ GEMINI_API_KEY: "g" })).some((l) => l.includes("gemini-3.1-flash-lite < gemini-3.8-flash"))).toBe(
+      true,
+    );
+  });
+});

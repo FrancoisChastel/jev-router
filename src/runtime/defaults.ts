@@ -8,6 +8,7 @@ import type {
   RuleAction,
   RuleInput,
 } from "../core/policy/types";
+import { GEMINI_API_KEY_ENV, type GeminiAuth, geminiPolicyParts } from "./gemini-defaults";
 import type { CodexModel, SubscriptionDetection } from "./subscriptions";
 
 /**
@@ -149,6 +150,8 @@ export interface KeyDetection {
   /** Undefined when no inference key was found; the relay then has nowhere to send traffic, but the Pi extension still works. */
   readonly egress?: EgressName;
   readonly found: readonly string[];
+  /** GEMINI_API_KEY is present: Gemini CLI can route over the Gemini API. It serves that harness only, never the judge. */
+  readonly gemini?: true;
 }
 
 /**
@@ -161,7 +164,7 @@ export function detectKeys(
   prefer?: { readonly judge?: JudgeTransport; readonly egress?: EgressName },
 ): KeyDetection {
   const has = (k: string) => typeof env[k] === "string" && env[k] !== "";
-  const found = ["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "TYPESAFE_API_KEY"].filter(has);
+  const found = ["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "TYPESAFE_API_KEY", GEMINI_API_KEY_ENV].filter(has);
   const egress: EgressName | undefined =
     prefer?.egress ?? (has("OPENROUTER_API_KEY") ? "openrouter" : has("AI_GATEWAY_API_KEY") ? "vercel" : undefined);
   let judge: JudgeTransport;
@@ -177,7 +180,7 @@ export function detectKeys(
         : judge === "openrouter"
           ? "OPENROUTER_API_KEY"
           : "";
-  return { judge, judgeKeyEnv, ...(egress ? { egress } : {}), found };
+  return { judge, judgeKeyEnv, ...(egress ? { egress } : {}), found, ...(has(GEMINI_API_KEY_ENV) ? { gemini: true as const } : {}) };
 }
 
 export interface CatalogEntry {
@@ -264,6 +267,12 @@ const policyDef = (defaultId: string, order: readonly string[], rules: readonly 
   switch: { cache_penalty: true, prefer_effort_over_model: false },
 });
 
+/** A Google login wins over an API key, as the other harnesses' logins do: the plan is already paid for. */
+function geminiAuthOf(detection: KeyDetection, subs: SubscriptionDetection | undefined): GeminiAuth | undefined {
+  if (subs?.gemini) return "google-login";
+  return detection.gemini ? "api-key" : undefined;
+}
+
 /** Build a complete, valid policy document from the detected keys and the curated candidates. */
 export function buildDefaultPolicy(opts: BuildPolicyOptions): PolicyInput {
   const { detection, catalog } = opts;
@@ -344,6 +353,16 @@ export function buildDefaultPolicy(opts: BuildPolicyOptions): PolicyInput {
     }
   }
 
+  const geminiAuth = geminiAuthOf(detection, subs);
+  if (geminiAuth) {
+    const parts = geminiPolicyParts(geminiAuth, catalog);
+    egressMap[parts.egressName] = parts.egress;
+    Object.assign(candidates, parts.candidates);
+    routes.push({ id: "auto", harness: "gemini", policy: "gemini" });
+    const { fast, mid, frontier } = parts.tiers;
+    policies.gemini = policyDef(fast, [fast, mid, frontier], rulesFor(parts.tiers));
+  }
+
   const judgeModel =
     detection.judge === "openrouter"
       ? EGRESS_DEFAULTS.openrouter.judge_model
@@ -390,5 +409,13 @@ export function describeSubscriptions(subs: SubscriptionDetection | undefined, c
         : `codex   Codex login (${subs.chatgpt.plan}) but no priced model in its catalog; Codex keeps the gateway route`,
     );
   }
+  if (subs?.gemini) lines.push(`gemini  Gemini CLI Google login: ${geminiLadder("google-login")} through Code Assist on your plan`);
   return lines;
+}
+
+/** The Gemini tier ladder as `a < b < c`, for init and setup output. */
+export function geminiLadder(auth: GeminiAuth): string {
+  return Object.values(geminiPolicyParts(auth).candidates)
+    .map((c) => c.model)
+    .join(" < ");
 }

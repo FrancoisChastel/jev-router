@@ -1,7 +1,10 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { GEMINI_ROUTE_MODEL } from "../runtime/gemini-defaults";
 import { resolvePolicyPath } from "../runtime/paths";
+import { geminiEndpoint, planGeminiEnv, planGeminiSettings } from "./gemini-plans";
+import { parseJsonc, stripJsonComments } from "./jsonc";
 import {
   type HarnessAuth,
   type JsonObject,
@@ -12,8 +15,8 @@ import {
   type SetupTarget,
 } from "./plans";
 
-export type Agent = "claude-code" | "codex" | "opencode" | "pi";
-export const AGENTS: readonly Agent[] = ["claude-code", "codex", "opencode", "pi"];
+export type Agent = "claude-code" | "codex" | "opencode" | "gemini" | "pi";
+export const AGENTS: readonly Agent[] = ["claude-code", "codex", "opencode", "gemini", "pi"];
 
 export interface SetupOptions {
   readonly agents: readonly Agent[];
@@ -21,7 +24,7 @@ export interface SetupOptions {
   readonly hookCommand: string;
   readonly token?: string;
   /** Per-harness auth mode, derived from the policy with `harnessAuth`; defaults to the relay token. */
-  readonly auth?: { readonly claudeCode?: HarnessAuth; readonly codex?: HarnessAuth };
+  readonly auth?: { readonly claudeCode?: HarnessAuth; readonly codex?: HarnessAuth; readonly gemini?: HarnessAuth };
   /** Known Claude Code model whose handling the `claude-code/auto` picker row borrows; see `claudeCodeBehavesAs`. */
   readonly behavesAs?: string;
   readonly dryRun: boolean;
@@ -108,8 +111,28 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
       const bundle = opts.openCodePluginPath ? await readText(opts.openCodePluginPath) : undefined;
       if (bundle) await writeWithBackup(join(home, ".config", "opencode", "plugins", "jev-router.js"), bundle, opts);
       else opts.log("  plugin bundle not found next to the CLI; sensors skipped (model routing still works through the provider)");
+    } else if (agent === "gemini") {
+      await setupGemini(home, target, opts);
     } else {
       opts.log("  run: pi install npm:jev-router   (in-process extension; no relay needed)");
     }
   }
+}
+
+async function setupGemini(home: string, target: SetupTarget, opts: SetupOptions): Promise<void> {
+  const settings = join(home, ".gemini", "settings.json");
+  const text = await readText(settings);
+  const existing = text === undefined || text.trim() === "" ? undefined : parseJsonc(text);
+  if (text !== undefined && stripJsonComments(text) !== text)
+    opts.log("  settings.json has comments; the rewritten file drops them (the original stays in settings.json.bak)");
+  await writeWithBackup(settings, json(planGeminiSettings(existing, target)), opts);
+  const envFile = join(home, ".gemini", ".env");
+  await writeWithBackup(envFile, planGeminiEnv((await readText(envFile)) ?? "", target), opts);
+  const { name, value } = geminiEndpoint(target);
+  if (target.auth?.gemini === "subscription")
+    opts.log("  Gemini CLI keeps its Google login; the relay forwards it to cloudcode-pa.googleapis.com");
+  else opts.log("  Gemini CLI keeps sending GEMINI_API_KEY; the relay replaces it with its own copy of the key");
+  opts.log(`  Gemini CLI reads ~/.gemini/.env only in trusted folders without a project .env; to be sure, add to your shell profile:`);
+  opts.log(`    export ${name}=${value}`);
+  opts.log(`  model set to ${GEMINI_ROUTE_MODEL} (plain 'auto' is Gemini CLI's own router and never reaches the relay)`);
 }

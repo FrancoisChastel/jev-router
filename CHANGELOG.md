@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Gemini CLI support. A `gemini` dialect for the Gemini API (`/v1beta/models/{model}:streamGenerateContent` and `:generateContent`, model rewritten in the path) and a `gemini-code-assist` dialect for Gemini CLI's Google-login backend (`/v1internal:streamGenerateContent`, model in the body). Both echo the requested id in `modelVersion`, meter `usageMetadata` (thinking tokens as output, cached content as cache reads), map a client-sent `thinkingLevel` to effort, and read tool outcomes from trailing `functionResponse` parts (`response.error` or a shell `Exit Code: N` is a failure). `x-goog-api-key` is the injected key header for these dialects and is accepted as the relay token.
+- `init` with `GEMINI_API_KEY` adds a `google` egress mounted at `/gemini` and a `gemini` policy over `gemini-3.1-flash-lite < gemini-3.8-flash < gemini-3.1-pro-preview`; with Gemini CLI logged in with Google it adds a `gemini-code-assist` egress mounted at `/code-assist` that forwards the login, over `gemini-3.1-flash-lite < gemini-3-flash < gemini-3.1-pro-preview`. The Gemini key is an inference key for Gemini CLI only, never the judge.
+- `setup --agent gemini` (also detected from `~/.gemini` or `gemini` on PATH) sets `model.name` to `jev-router/auto` in `~/.gemini/settings.json` (Gemini CLI resolves plain `auto` itself), writes the relay endpoint to `~/.gemini/.env`, stores `GEMINI_API_KEY` in `~/.jev-router/env` for the background relay, and with a Google login adds `AfterTool` and `BeforeAgent` hooks running `jev-router hook gemini`; `plugins/gemini` has the same hooks for manual installs. Settings files with comments are read.
+- Harness `gemini` with a tool-semantics profile for Gemini CLI's built-in tools; a session key carried in the request body (Code Assist's `session_id`) is used before the prefix digest.
+
+### Changed
+
+- An unrouted Gemini request outside a mount goes to the egress the Gemini route uses instead of the default egress, since no gateway serves that dialect.
+
 ## [0.2.0] - 2026-09-27
 
 ### Added

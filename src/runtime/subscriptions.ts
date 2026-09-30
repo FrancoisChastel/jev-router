@@ -4,8 +4,8 @@ import type { Effort } from "../core/types";
 
 /**
  * Detect coding subscriptions from what the harnesses leave on disk, so `init` can build candidates from the models
- * each plan already includes. Only plan metadata is read: Claude Code's account record (no token lives there) and the
- * plan claim inside Codex's id token. Nothing is copied, printed, or kept, and the relay forwards each harness's own
+ * each plan already includes. Only plan metadata is read: Claude Code's account record (no token lives there), the
+ * plan claim inside Codex's id token, and Gemini CLI's chosen auth type. Nothing is copied, printed, or kept, and the relay forwards each harness's own
  * credentials at request time instead of holding any.
  */
 
@@ -34,9 +34,15 @@ export interface ChatGptSubscription {
   readonly modelsFrom: "cache" | "built-in";
 }
 
+export interface GeminiSubscription {
+  /** Gemini CLI's auth type: `oauth-personal` (Login with Google) is the one the relay can forward. */
+  readonly authType: "oauth-personal";
+}
+
 export interface SubscriptionDetection {
   readonly anthropic?: AnthropicSubscription;
   readonly chatgpt?: ChatGptSubscription;
+  readonly gemini?: GeminiSubscription;
 }
 
 const EFFORTS: ReadonlySet<string> = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -111,6 +117,15 @@ export function parseCodexModelsCache(json: unknown): CodexModel[] {
   return out;
 }
 
+/**
+ * Gemini CLI's ~/.gemini/settings.json records the chosen auth type at `security.auth.selectedType`. The file may
+ * carry comments, so the key is matched as text rather than parsed. No credential is read.
+ */
+export function parseGeminiSettings(text: string | undefined): GeminiSubscription | undefined {
+  if (!text) return undefined;
+  return /"selectedType"\s*:\s*"oauth-personal"/.test(text) ? { authType: "oauth-personal" } : undefined;
+}
+
 export interface DetectSubscriptionsOptions {
   readonly home: string;
   readonly readFile?: (path: string) => Promise<string>;
@@ -135,5 +150,12 @@ export async function detectSubscriptions(opts: DetectSubscriptionsOptions): Pro
         ? { plan: codexAuth.plan, models: cached, modelsFrom: "cache" }
         : { plan: codexAuth.plan, models: CODEX_BUILT_IN_MODELS, modelsFrom: "built-in" };
   }
-  return { ...(anthropic ? { anthropic } : {}), ...(chatgpt ? { chatgpt } : {}) };
+  let geminiSettings: string | undefined;
+  try {
+    geminiSettings = await read(join(opts.home, ".gemini", "settings.json"));
+  } catch {
+    geminiSettings = undefined;
+  }
+  const gemini = parseGeminiSettings(geminiSettings);
+  return { ...(anthropic ? { anthropic } : {}), ...(chatgpt ? { chatgpt } : {}), ...(gemini ? { gemini } : {}) };
 }

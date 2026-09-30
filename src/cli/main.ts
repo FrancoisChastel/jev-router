@@ -12,6 +12,7 @@ import { replay } from "../measure/replay";
 import { parseLog, summarize } from "../measure/stats";
 import type { EgressName } from "../runtime/defaults";
 import { applyEnv, envFilePath, formatEnvFile, loadEnvFile } from "../runtime/envfile";
+import { GEMINI_API_EGRESS, GEMINI_API_KEY_ENV } from "../runtime/gemini-defaults";
 import { describeDetection, initPolicy } from "../runtime/init";
 import { createJudge } from "../runtime/judge-factory";
 import { JsonlLogger } from "../runtime/log";
@@ -26,7 +27,8 @@ const USAGE = `jev-router <command>
 
   init [--force] [--judge openrouter|vercel|typesafe] [--egress openrouter|vercel] [--no-subscriptions]
                                         write ~/.jev-router/policy.json from the keys in your environment
-                                        (OPENROUTER_API_KEY, AI_GATEWAY_API_KEY, TYPESAFE_API_KEY) with live prices
+                                        (OPENROUTER_API_KEY, AI_GATEWAY_API_KEY, TYPESAFE_API_KEY, and GEMINI_API_KEY
+                                        for Gemini CLI) with live prices
   ping                                  ask the judge one question and report latency and cost
   up [--host 127.0.0.1] [--port 4141] [--shadow <candidate>] [--token <secret>]
                                         start the local relay and decision service; --shadow serves one
@@ -37,12 +39,12 @@ const USAGE = `jev-router <command>
                                         re-decide the log under another policy using recorded judge answers
   setup [--judge-key <key>] [--agent <name>]... [--no-service] [--no-prompt] [--dry-run] [--port 4141] [--token <secret>]
                                         one command: take the judge key (asked for once, stored in ~/.jev-router/env),
-                                        detect your Claude Code and Codex logins and installed harnesses, write the
+                                        detect your Claude Code, Codex, and Gemini CLI logins and installed harnesses, write the
                                         policy, point each harness at the relay, install the relay as a background
-                                        service, and check it answers. agents: claude-code, codex, opencode, pi
+                                        service, and check it answers. agents: claude-code, codex, opencode, gemini, pi
   service install|uninstall|status [--port 4141]
                                         manage the background relay (launchd on macOS, systemd --user on Linux)
-  hook <claude-code|codex>              forward a native hook payload from stdin to the relay (used by hook packs)
+  hook <claude-code|codex|gemini>       forward a native hook payload from stdin to the relay (used by hook packs)
   policy                                validate the policy file and print where it was read from
   version | --version
   help
@@ -64,7 +66,8 @@ export function judgeKeyEnv(key: string, judge?: string): string {
   throw new Error("cannot tell which provider this key belongs to; add --judge openrouter|vercel|typesafe");
 }
 
-async function saveJudgeKey(envName: string, key: string): Promise<string> {
+/** Store a key in the 600 env file every command (and the background service) reads. */
+async function saveKey(envName: string, key: string): Promise<string> {
   const path = envFilePath(process.env);
   const vars = { ...(await loadEnvFile(path)), [envName]: key };
   await mkdir(dirname(path), { recursive: true });
@@ -72,6 +75,22 @@ async function saveJudgeKey(envName: string, key: string): Promise<string> {
   await chmod(path, 0o600);
   process.env[envName] = key;
   return path;
+}
+
+/**
+ * The relay injects GEMINI_API_KEY upstream for Gemini CLI, and a background service has no shell to inherit it from,
+ * so the key from this shell goes in the same 600 env file as the judge key.
+ */
+async function keepGeminiKey(dryRun: boolean, log: (line: string) => void): Promise<void> {
+  const path = envFilePath(process.env);
+  if ((await loadEnvFile(path))[GEMINI_API_KEY_ENV]) return;
+  const key = process.env[GEMINI_API_KEY_ENV];
+  if (!key) {
+    log(`gemini: ${GEMINI_API_KEY_ENV} is not set; add it to ${path} so the background relay can reach the Gemini API`);
+    return;
+  }
+  if (dryRun) log(`gemini: would store ${GEMINI_API_KEY_ENV} in ${path}`);
+  else log(`gemini: ${GEMINI_API_KEY_ENV} stored in ${await saveKey(GEMINI_API_KEY_ENV, key)} (mode 600) for the background relay`);
 }
 
 async function askForKey(): Promise<string | undefined> {
@@ -291,20 +310,25 @@ async function setup(args: readonly string[]): Promise<void> {
   if (pasted) {
     const envName = judgeKeyEnv(pasted, flag(args, "--judge"));
     if (dryRun) log(`judge: would store ${envName} in ${envFilePath(process.env)}`);
-    else log(`judge: ${envName} stored in ${await saveJudgeKey(envName, pasted)} (mode 600)`);
+    else log(`judge: ${envName} stored in ${await saveKey(envName, pasted)} (mode 600)`);
   } else if (!hasJudgeKey) log("judge: no key; routing uses tool signals only until one is added (`jev-router setup --judge-key ...`)");
 
   // 2. The policy: keys, logins, live prices.
   const policyPath = await ensurePolicy(log);
   const policy = await readPolicyFile(policyPath);
-  const auth = { claudeCode: harnessAuth(policy, "claude-code"), codex: harnessAuth(policy, "codex") };
+  const auth = {
+    claudeCode: harnessAuth(policy, "claude-code"),
+    codex: harnessAuth(policy, "codex"),
+    gemini: harnessAuth(policy, "gemini"),
+  };
   const behavesAs = claudeCodeBehavesAs(policy);
 
   // 3. Every harness that is actually installed, unless told which.
   const detected = requested.length > 0 ? [] : await detectAgents(defaultProbe(homedir()));
   const agents = (requested.length > 0 ? requested : detected) as readonly Agent[];
-  if (agents.length === 0) log("harnesses: none of claude-code, codex, opencode, pi found; pass --agent to configure one anyway");
+  if (agents.length === 0) log(`harnesses: none of ${AGENTS.join(", ")} found; pass --agent to configure one anyway`);
   else log(`harnesses: ${agents.join(", ")}${requested.length > 0 ? "" : " (installed)"}`);
+  if (agents.includes("gemini") && auth.gemini === "token" && policy.egress[GEMINI_API_EGRESS]) await keepGeminiKey(dryRun, log);
   await runSetup({
     agents,
     baseUrl: `http://127.0.0.1:${port}`,
@@ -361,7 +385,8 @@ export async function forwardHook(
 
 async function hook(args: readonly string[]): Promise<void> {
   const harness = args[0];
-  if (harness !== "claude-code" && harness !== "codex") throw new Error("hook needs a harness: claude-code or codex");
+  if (harness !== "claude-code" && harness !== "codex" && harness !== "gemini")
+    throw new Error("hook needs a harness: claude-code, codex, or gemini");
   const chunks: Buffer[] = [];
   for await (const c of process.stdin) chunks.push(c as Buffer);
   const token = process.env.JEV_ROUTER_TOKEN;

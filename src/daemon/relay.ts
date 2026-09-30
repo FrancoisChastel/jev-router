@@ -5,7 +5,7 @@ import type { TokenUsage } from "../core/record";
 import { resolveSessionKey } from "../core/session";
 import type { Harness } from "../core/types";
 import type { FetchLike } from "../judge/http";
-import { type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
+import { type Dialect, type DialectAdapter, isObject, type JsonObject } from "./dialects/types";
 import {
   copyResponseHeaders,
   detectHarness,
@@ -15,6 +15,7 @@ import {
   requestClassOf,
   sendJson,
   upstreamHeaders,
+  usageOf,
 } from "./http-util";
 import type { RouterService } from "./service";
 import { createSseTransform } from "./sse";
@@ -51,6 +52,34 @@ function defaultEgress(policy: Policy): { readonly name: string; readonly egress
   return name ? { name, egress: policy.egress[name] as EgressInput } : undefined;
 }
 
+const isGeminiDialect = (d: Dialect): boolean => d === "gemini" || d === "gemini-code-assist";
+
+/** Only Gemini clients speak the Gemini dialects, so an unrecognised caller there is treated as Gemini CLI. */
+function harnessOf(r: RelayRequest): Harness {
+  const detected = detectHarness(r.headers);
+  return detected === "unknown" && isGeminiDialect(r.dialect.dialect) ? "gemini" : detected;
+}
+
+/**
+ * Where an unrouted request goes: the egress it arrived under, else (for the Gemini dialects, which no gateway
+ * serves) the egress this harness's routed traffic uses, else the default egress.
+ */
+function passthroughEgress(
+  policy: Policy,
+  r: RelayRequest,
+  harness: Harness,
+): { readonly name: string; readonly egress: EgressInput } | undefined {
+  const mounted = r.egressName ? policy.egress[r.egressName] : undefined;
+  if (mounted && r.egressName) return { name: r.egressName, egress: mounted };
+  if (isGeminiDialect(r.dialect.dialect)) {
+    const route = findRoute(policy, "auto", harness);
+    const def = route ? policy.policies[route.policy] : undefined;
+    const candidate = def ? policy.candidates[def.default] : undefined;
+    if (candidate?.via && policy.egress[candidate.via]) return egressFor(policy, candidate);
+  }
+  return defaultEgress(policy);
+}
+
 function egressFor(policy: Policy, candidate: Candidate | undefined): { readonly name: string; readonly egress: EgressInput } | undefined {
   if (candidate?.via && policy.egress[candidate.via]) return { name: candidate.via, egress: policy.egress[candidate.via] as EgressInput };
   return defaultEgress(policy);
@@ -85,24 +114,23 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
     return;
   }
 
-  const harness = detectHarness(r.headers);
-  const normalized = r.dialect.normalize(body);
+  const harness = harnessOf(r);
+  const normalized = r.dialect.normalize(body, r.path);
   const route = findRoute(policy, normalized.requestedModel, harness);
 
-  // Unknown model ids pass straight through to the default egress with credentials swapped and nothing rewritten.
+  // Unknown model ids pass straight through with credentials swapped and nothing rewritten.
   if (!route) {
-    const mounted = r.egressName ? policy.egress[r.egressName] : undefined;
-    const target = mounted && r.egressName ? { name: r.egressName, egress: mounted } : defaultEgress(policy);
+    const target = passthroughEgress(policy, r, harness);
     if (!target) {
       sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, "no egress configured for passthrough"));
       return;
     }
-    await forward(deps, r, target, body, { source: "passthrough" });
+    await forward(deps, r, target, body, { source: "passthrough", stream: normalized.stream });
     return;
   }
 
   const digest = createHash("sha256").update(normalized.prefixDigestInput).digest("hex").slice(0, 32);
-  const { key: sessionKey } = resolveSessionKey(r.headers, digest);
+  const { key: sessionKey } = resolveSessionKey(r.headers, digest, normalized.sessionKey);
 
   if (r.countTokens) {
     // Use the model this session is currently on (or the policy default) so the count matches the tokenizer in use.
@@ -119,7 +147,7 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
       r,
       target,
       { ...body, model: candidate.model },
-      { source: "count_tokens", requestedModel: normalized.requestedModel },
+      { source: "count_tokens", requestedModel: normalized.requestedModel, stream: false },
     );
     return;
   }
@@ -147,6 +175,8 @@ export async function relay(deps: RelayDeps, r: RelayRequest): Promise<void> {
   await forward(deps, r, target, rewritten, {
     source: shadow ? "shadow" : decided.decision.source,
     requestedModel: normalized.requestedModel,
+    stream: normalized.stream,
+    ...(r.dialect.rewritePath ? { path: r.dialect.rewritePath(r.path, served) } : {}),
     extraHeaders: {
       "x-jev-router-model": served.model,
       "x-jev-router-candidate": servedId,
@@ -168,6 +198,8 @@ export interface ProxyRequest {
   readonly clientGone?: AbortSignal;
   /** Rewrites a complete JSON response body before it is sent; streams and non-JSON bodies pass untouched. */
   readonly transformJson?: (json: JsonObject) => JsonObject;
+  /** Dialect whose key header an injected API key goes in; defaults to bearer plus `x-api-key`. */
+  readonly keyDialect?: Dialect;
 }
 
 /**
@@ -187,7 +219,7 @@ export async function proxy(
   }
   const url = `${target.egress.base_url.replace(/\/+$/, "")}${p.path}${p.query}`;
   // "anthropic" makes upstreamHeaders inject both bearer and x-api-key when a key is used; harmless elsewhere.
-  const headers = upstreamHeaders(p.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: "anthropic" });
+  const headers = upstreamHeaders(p.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: p.keyDialect ?? "anthropic" });
   const hasBody = p.rawBody !== undefined && p.rawBody !== "" && p.method !== "GET" && p.method !== "HEAD";
   if (!hasBody) delete headers["content-type"];
   const abort = new AbortController();
@@ -242,6 +274,10 @@ export async function proxy(
 
 interface ForwardOptions {
   readonly source: string;
+  /** Whether the client asked for a stream; decides how a body without a content-type is read. */
+  readonly stream: boolean;
+  /** Upstream path when routing rewrote it (Gemini carries the model in the path); defaults to the request path. */
+  readonly path?: string;
   /** When set, the client's model id is echoed back in place of the upstream's. Absent for passthrough. */
   readonly requestedModel?: string;
   readonly extraHeaders?: Record<string, string>;
@@ -273,7 +309,7 @@ async function forward(
     sendJson(r.res, 502, errorBody(r.dialect.dialect, 502, `egress '${target.name}' has no API key configured`));
     return;
   }
-  const url = `${target.egress.base_url.replace(/\/+$/, "")}${r.path}${r.query}`;
+  const url = `${target.egress.base_url.replace(/\/+$/, "")}${opts.path ?? r.path}${r.query}`;
   const headers = upstreamHeaders(r.headers, { ...(apiKey ? { apiKey } : {}), forwardAuth, dialect: r.dialect.dialect });
   const abort = new AbortController();
   let finished = false;
@@ -319,7 +355,7 @@ async function forward(
 
   // Some upstreams (chatgpt.com's Codex backend among them) stream without a content-type; the request asked for a
   // stream, so treat the body as one rather than buffering it to the end.
-  const isStream = contentType.includes("text/event-stream") || (contentType === "" && body.stream === true);
+  const isStream = contentType.includes("text/event-stream") || (contentType === "" && (opts.stream || body.stream === true));
   if (isStream) {
     let usage: TokenUsage | undefined;
     let terminalSeen = false;
@@ -361,7 +397,8 @@ async function forward(
   let usage: TokenUsage | undefined;
   try {
     const json = JSON.parse(text) as JsonObject;
-    if (typeof json.usage === "object" && json.usage !== null) usage = mergeUsage(undefined, json.usage as Record<string, unknown>);
+    const raw = usageOf(json);
+    if (raw) usage = mergeUsage(undefined, raw);
     if (requestedModel) out = JSON.stringify(r.dialect.echoModel(json, requestedModel));
   } catch {
     /* not JSON: forward verbatim */

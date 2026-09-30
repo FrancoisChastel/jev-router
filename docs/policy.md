@@ -35,13 +35,13 @@ Named upstreams the relay forwards to. Both OpenRouter and Vercel serve the Anth
 | Field | Notes |
 |---|---|
 | `base_url` | Upstream root; the request path is appended |
-| `api_key_env` | Environment variable holding the key the relay injects |
-| `forward_auth` | Forward the caller's own `Authorization` / `x-api-key` instead of injecting a key. How Claude Code's and Codex's logins reach their providers |
-| `mount` | Relay path prefix served by this egress, for example `/backend-api/codex`. An inference sub-path (`/responses`, `/chat/completions`, `/messages`) is routed; anything else under it is proxied unchanged, credentials aside. A proxied Codex catalog gains an `auto` entry |
+| `api_key_env` | Environment variable holding the key the relay injects: as `x-goog-api-key` for the Gemini dialects, as a bearer (plus `x-api-key` for Anthropic) otherwise |
+| `forward_auth` | Forward the caller's own `Authorization` / `x-api-key` / `x-goog-api-key` instead of injecting a key. How Claude Code's, Codex's, and Gemini CLI's logins reach their providers |
+| `mount` | Relay path prefix served by this egress, for example `/backend-api/codex`. An inference sub-path (`/responses`, `/chat/completions`, `/messages`, Gemini's `/v1beta/models/{model}:generateContent` / `:streamGenerateContent`, Code Assist's `/v1internal:generateContent` / `:streamGenerateContent`) is routed; anything else under it is proxied unchanged, credentials aside. A proxied Codex catalog gains an `auto` entry |
 | `billing` | `usd` (default) or `subscription`. The latter marks prices as API list-price equivalents, the scale a plan's allowance is consumed on; `stats` says so |
 | `pi_provider` | Pi provider name when it differs from the egress name |
 
-`init` writes `anthropic-subscription` (`https://api.anthropic.com`, forward_auth) when Claude Code is logged in and `chatgpt-subscription` (`https://chatgpt.com/backend-api/codex`, mounted, forward_auth) when Codex is.
+`init` writes `anthropic-subscription` (`https://api.anthropic.com`, forward_auth) when Claude Code is logged in and `chatgpt-subscription` (`https://chatgpt.com/backend-api/codex`, mounted, forward_auth) when Codex is. For Gemini CLI it writes `gemini-code-assist` (`https://cloudcode-pa.googleapis.com`, mounted at `/code-assist`, forward_auth) when Gemini CLI is logged in with Google, else `google` (`https://generativelanguage.googleapis.com`, mounted at `/gemini`, `GEMINI_API_KEY`) when that key is set. No gateway serves the Gemini dialects, so an unrouted Gemini request goes to the egress the Gemini route uses rather than the default egress.
 
 ## candidates
 
@@ -58,7 +58,7 @@ Named upstreams the relay forwards to. Both OpenRouter and Vercel serve the Anth
 
 ## routes
 
-Client-visible model ids. `auto` is the generic route, and any `<prefix>/auto` maps onto it. `harness` restricts a route to one harness or `any`. A route id of `*` catches everything else; without it, unknown model ids pass straight through to the default egress with nothing rewritten.
+Client-visible model ids. `auto` is the generic route, and any `<prefix>/auto` maps onto it. `harness` restricts a route to one harness (`claude-code`, `codex`, `opencode`, `gemini`, `pi`) or `any`. Gemini CLI uses `jev-router/auto`, because it resolves a plain `auto` itself. A route id of `*` catches everything else; without it, unknown model ids pass straight through to the default egress with nothing rewritten.
 
 ## policies
 

@@ -9,6 +9,7 @@ import {
   describeSubscriptions,
   detectKeys,
   type EgressName,
+  geminiLadder,
   type KeyDetection,
   parseOpenRouterCatalog,
 } from "./defaults";
@@ -99,10 +100,11 @@ export function describeDetection(d: KeyDetection, subs?: SubscriptionDetection)
   lines.push(
     d.egress
       ? `egress  ${d.egress}`
-      : subs?.anthropic || subs?.chatgpt
+      : subs?.anthropic || subs?.chatgpt || subs?.gemini || d.gemini
         ? "egress  no gateway key: harnesses without a subscription route below have nowhere to send traffic"
         : "egress  none: the relay needs OPENROUTER_API_KEY or AI_GATEWAY_API_KEY; the Pi extension works without one",
   );
   lines.push(...describeSubscriptions(subs));
+  if (d.gemini && !subs?.gemini) lines.push(`gemini  GEMINI_API_KEY: Gemini CLI routes ${geminiLadder("api-key")} on the Gemini API`);
   return lines;
 }
